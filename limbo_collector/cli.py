@@ -4,7 +4,7 @@ import sys
 from pathlib import Path
 from typing import List, Tuple, Optional
 
-from .scanner import trouver_code_mort, trouver_imports_morts, trouver_variables_mortes, CodeEntity, ImportInutile, VariableInutilisee
+from .scanner import trouver_code_mort, trouver_imports_morts, trouver_variables_mortes, trouver_unreachable, trouver_params_morts, CodeEntity, ImportInutile, VariableInutilisee, CodeUnreachable, ParametreInutilise
 from .project_scanner import analyser_projet_complet, ResultatProjet
 from .config import LimboConfig
 
@@ -13,13 +13,14 @@ def creer_parser() -> argparse.ArgumentParser:
     """Crée et configure le parser d'arguments."""
     parser = argparse.ArgumentParser(
         prog="limbo-collector",
-        description="Trouve le code Python inutilisé : imports, variables, fonctions et classes",
+        description="Trouve le code Python inutilisé : imports, variables, fonctions, classes, code unreachable, paramètres et d'autes feeture a venir",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Exemples d'utilisation:
   limbo-collector mon_fichier.py
   limbo-collector mon_projet/
   limbo-collector . --strict --json
+  limbo-collector . --unreachable --params
   limbo-collector --init-config
         """,
     )
@@ -64,6 +65,16 @@ Exemples d'utilisation:
         "--init-config",
         action="store_true",
         help="Crée un fichier de configuration exemple",
+    )
+    parser.add_argument(
+        "--unreachable",
+        action="store_true",
+        help="Détecte le code unreachable"
+    )
+    parser.add_argument(
+        "--params",
+        action="store_true",
+        help="Détecte les paramètres inutilisés"
     )
 
     return parser
@@ -115,6 +126,20 @@ def formater_variable(var: VariableInutilisee) -> str:
     return f"Ligne {var.ligne:3d} → '{var.nom}' dans {var.fonction_parent}()"
 
 
+def formater_unreachable(unreach: CodeUnreachable) -> str:
+    lignes = f"{unreach.ligne_debut}-{unreach.ligne_fin}" if unreach.ligne_debut != unreach.ligne_fin else str(unreach.ligne_debut)
+    return f"Lignes {lignes:7} → {unreach.description}"
+
+
+def formater_parametre(param: ParametreInutilise) -> str:
+    prefix = ""
+    if param.est_args:
+        prefix = "*"
+    elif param.est_kwargs:
+        prefix = "**"
+    return f"Ligne {param.ligne:3d} → {prefix}{param.nom} dans {param.fonction}()"
+
+
 def formater_entite_morte(entite: CodeEntity) -> str:
     """Formate une entité morte pour l'affichage."""
     symbole = "  "
@@ -129,7 +154,7 @@ def formater_entite_morte(entite: CodeEntity) -> str:
 
     if entite.decorateurs:
         resultat += f"\n       décorateurs : {', '.join(entite.decorateurs)}"
-
+    
     return resultat
 
 
@@ -149,34 +174,32 @@ def afficher_resultats_fichier(
     suspects: List[CodeEntity],
     imports: List[ImportInutile],
     variables: List[VariableInutilisee],
+    unreachable: List[CodeUnreachable],
+    params: List[ParametreInutilise],
     nom_fichier: str,
     mode_strict: bool,
 ) -> int:
-    """
-    Affiche les résultats pour un fichier unique.
-    Retourne le nombre de problèmes certains.
-    """
+    """Affiche résultats pour un fichier."""
     print("=" * 60)
     print(f"Limbo Collector - {nom_fichier}")
     print("=" * 60)
 
     afficher_section("Imports inutilisés", imports, formater_import)
     afficher_section("Variables inutilisées", variables, formater_variable)
+    afficher_section("Paramètres inutilisés", params, formater_parametre)
+    afficher_section("Code unreachable", unreachable, formater_unreachable)
     afficher_section("Code sûrement mort", morts, formater_entite_morte)
 
     if mode_strict:
         afficher_section("Code probablement mort", suspects, formater_entite_suspecte)
 
-    total_certains = len(imports) + len(variables) + len(morts)
-    total_suspects = len(suspects)
-
-    if total_certains == 0 and total_suspects == 0:
+    total_certains = len(imports) + len(variables) + len(morts) + len(unreachable) + len(params)
+    if total_certains == 0:
         print("\nAucun code mort détecté")
-    elif total_certains == 0:
-        print(f"\n{total_suspects} suspect(s) trouvé(s) (mode strict)")
+    elif total_certains == 0 and mode_strict:
+        print(f"\n{len(suspects)} suspect(s) trouvé(s) (mode strict)")
 
     print("-" * 60)
-
     return total_certains
 
 
@@ -185,7 +208,9 @@ def exporter_json_fichier(
     suspects: List[CodeEntity],
     imports: List[ImportInutile],
     variables: List[VariableInutilisee],
-    chemin: str,
+    unreachable: List[CodeUnreachable],
+    params: List[ParametreInutilise],
+    chemin: str
 ) -> None:
     """Exporte les résultats d'un fichier en JSON."""
     resultat = {
@@ -196,6 +221,8 @@ def exporter_json_fichier(
             "total_suspects": len(suspects),
             "total_imports": len(imports),
             "total_variables": len(variables),
+            "total_unreachable": len(unreachable),
+            "total_params": len(params)
         },
         "morts": [
             {
@@ -203,7 +230,7 @@ def exporter_json_fichier(
                 "type": e.type,
                 "ligne": e.ligne,
                 "classe_parent": e.classe_parent,
-                "decorateurs": e.decorateurs,
+                "decorateurs": e.decorateurs
             }
             for e in morts
         ],
@@ -212,7 +239,7 @@ def exporter_json_fichier(
                 "nom": e.nom,
                 "type": e.type,
                 "ligne": e.ligne,
-                "classe_parent": e.classe_parent,
+                "classe_parent": e.classe_parent
             }
             for e in suspects
         ],
@@ -221,7 +248,7 @@ def exporter_json_fichier(
                 "nom": i.nom,
                 "ligne": i.ligne,
                 "type": i.type,
-                "module": i.module_source,
+                "module": i.module_source
             }
             for i in imports
         ],
@@ -234,8 +261,26 @@ def exporter_json_fichier(
             }
             for v in variables
         ],
+        "unreachable": [
+            {
+                "debut": u.ligne_debut,
+                "fin": u.ligne_fin,
+                "type": u.type,
+                "description": u.description
+            }
+            for u in unreachable
+        ],
+        "parametres": [
+            {
+                "nom": p.nom,
+                "ligne": p.ligne,
+                "fonction": p.fonction,
+                "est_args": p.est_args,
+                "est_kwargs": p.est_kwargs
+                }
+                for p in params
+            ]
     }
-
     print(json.dumps(resultat, indent=2, ensure_ascii=False))
 
 
@@ -247,19 +292,16 @@ def analyser_fichier(chemin: Path, args, config: LimboConfig) -> int:
     if chemin.suffix != ".py":
         print(f"Avertissement : {chemin} n'est pas un fichier Python", file=sys.stderr)
 
-    morts, suspects, _ = (
-        ([], [], []) if args.no_functions else trouver_code_mort(str(chemin))
-    )
-
+    morts, suspects, _ = ([], [], []) if args.no_functions else trouver_code_mort(str(chemin))
     imports = [] if args.no_imports else trouver_imports_morts(str(chemin))
     variables = [] if args.no_variables else trouver_variables_mortes(str(chemin))
+    unreachable = trouver_unreachable(str(chemin)) if args.unreachable else []
+    params = trouver_params_morts(str(chemin)) if args.params else []
 
     if args.json:
-        exporter_json_fichier(morts, suspects, imports, variables, str(chemin))
+        exporter_json_fichier(morts, suspects, imports, variables, unreachable, params, str(chemin))
     else:
-        total = afficher_resultats_fichier(
-            morts, suspects, imports, variables, chemin.name, args.strict
-        )
+        total = afficher_resultats_fichier(morts, suspects, imports, variables, unreachable, params, chemin.name, args.strict)
         return 1 if total > 0 else 0
 
     return 0
@@ -275,14 +317,14 @@ def formater_entite_projet(item: Tuple[str, CodeEntity]) -> str:
 def afficher_resultats_projet(
     resultat: ResultatProjet,
     args,
-    config: LimboConfig,
+    config: LimboConfig
 ) -> int:
     """
     Affiche les résultats pour un projet complet.
     Retourne le nombre de problèmes certains.
     """
     print("=" * 60)
-    print(f"Limbo Collector - Projet")
+    print("Limbo Collector - Projet")
     print("=" * 60)
     print(f"Fichiers analysés : {resultat.fichiers_analyses}")
 
@@ -294,27 +336,14 @@ def afficher_resultats_projet(
     suspects = resultat.code_suspect
 
     # Compte les imports et variables
-    total_imports = sum(
-        len(v) for v in resultat.imports_morts_par_fichier.values()
-    )
-    total_variables = sum(
-        len(v) for v in resultat.variables_mortes_par_fichier.values()
-    )
+    total_imports = sum(len(v) for v in resultat.imports_morts_par_fichier.values())
+    total_variables = sum(len(v) for v in resultat.variables_mortes_par_fichier.values())
 
     # Affichage code mort
     if not args.no_functions:
-        afficher_section(
-            "Code sûrement mort (fonctions/classes)",
-            morts,
-            formater_entite_projet,
-        )
-
+        afficher_section("Code sûrement mort (fonctions/classes)", morts, formater_entite_projet)
         if args.strict:
-            afficher_section(
-                "Code probablement mort",
-                suspects,
-                formater_entite_projet,
-            )
+            afficher_section("Code probablement mort", suspects, formater_entite_projet)
 
     # Affichage imports
     if not args.no_imports and total_imports > 0:
@@ -336,11 +365,12 @@ def afficher_resultats_projet(
 
     total_certains = len(morts) + total_imports + total_variables
     total_suspects = len(suspects)
-
-    if total_certains == 0 and total_suspects == 0:
+    if total_certains == 0:
         print("\nAucun code mort détecté")
-    elif total_certains == 0:
+    elif args.strict and total_certains == 0 and total_suspects != 0:
         print(f"\n{total_suspects} suspect(s) trouvé(s) (mode strict)")
+    else:
+        print("\nAucun code mort détecté (mode strict)")
 
     print("-" * 60)
 
@@ -355,7 +385,7 @@ def exporter_json_projet(resultat: ResultatProjet, chemin: str) -> None:
         "fichiers_analyses": resultat.fichiers_analyses,
         "resume": {
             "total_morts": len(resultat.code_mort),
-            "total_suspects": len(resultat.code_suspect),
+            "total_suspects": len(resultat.code_suspect)
         },
         "code_mort": [
             {
@@ -364,7 +394,7 @@ def exporter_json_projet(resultat: ResultatProjet, chemin: str) -> None:
                 "type": e.type,
                 "ligne": e.ligne,
                 "classe_parent": e.classe_parent,
-                "raison": e.raison_utilisation,
+                "raison": e.raison_utilisation
             }
             for c, e in resultat.code_mort
         ],
@@ -373,7 +403,7 @@ def exporter_json_projet(resultat: ResultatProjet, chemin: str) -> None:
                 "fichier": c,
                 "nom": e.nom,
                 "type": e.type,
-                "ligne": e.ligne,
+                "ligne": e.ligne
             }
             for c, e in resultat.code_suspect
         ],
@@ -390,13 +420,13 @@ def exporter_json_projet(resultat: ResultatProjet, chemin: str) -> None:
                 {
                     "nom": v.nom,
                     "ligne": v.ligne,
-                    "fonction": v.fonction_parent,
+                    "fonction": v.fonction_parent
                 }
                 for v in vars_list
             ]
             for f, vars_list in resultat.variables_mortes_par_fichier.items()
             if vars_list
-        },
+        }
     }
 
     print(json.dumps(resultat_json, indent=2, ensure_ascii=False))
@@ -458,7 +488,6 @@ def main() -> int:
             return analyser_fichier(chemin, args, config)
         else:
             return analyser_dossier(chemin, args, config)
-
     except Exception as erreur:
         print(f"Erreur lors de l'analyse : {erreur}", file=sys.stderr)
         import traceback

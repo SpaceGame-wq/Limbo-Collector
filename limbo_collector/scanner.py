@@ -5,6 +5,8 @@ from typing import List, Set, Tuple
 from .imports import analyser_imports_fichier, ImportInutile
 from .variables import trouver_variables_inutilisees, VariableInutilisee
 from .analyzer_advanced import analyser_fichier_avance, CodeEntity
+from .unreachable import trouver_code_unreachable, CodeUnreachable
+from .parameters import trouver_parametres_inutilises, ParametreInutilise
 
 
 @dataclass
@@ -82,3 +84,13 @@ def trouver_variables_mortes(chemin_fichier: str) -> List[VariableInutilisee]:
     """Trouve les variables locales inutilisées."""
     contenu = Path(chemin_fichier).read_text(encoding='utf-8')
     return trouver_variables_inutilisees(contenu)
+
+
+def trouver_unreachable(chemin_fichier: str) -> List[CodeUnreachable]:
+    """Trouve le code unreachable."""
+    return trouver_code_unreachable(chemin_fichier)
+
+
+def trouver_params_morts(chemin_fichier: str) -> List[ParametreInutilise]:
+    """Trouve les paramètres inutilisés."""
+    return trouver_parametres_inutilises(chemin_fichier)
