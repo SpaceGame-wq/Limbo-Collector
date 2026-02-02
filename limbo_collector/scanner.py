@@ -3,6 +3,7 @@ from pathlib import Path
 from dataclasses import dataclass
 from typing import List, Set, Tuple
 from .imports import analyser_imports_fichier, ImportInutile
+from .variables import trouver_variables_inutilisees, VariableInutilisee
 
 
 @dataclass
@@ -87,3 +88,9 @@ def trouver_code_mort(chemin_fichier: str) -> Tuple[List[ObjetCode], List[ObjetC
 def trouver_imports_morts(chemin_fichier: str) -> List[ImportInutile]:
     """Trouve les imports inutilisés dans un fichier."""
     return analyser_imports_fichier(chemin_fichier)
+
+
+def trouver_variables_mortes(chemin_fichier: str):
+    """Trouve les variables locales inutilisées."""
+    contenu = Path(chemin_fichier).read_text(encoding='utf-8')
+    return trouver_variables_inutilisees(contenu)
