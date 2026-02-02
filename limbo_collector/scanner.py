@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from typing import List, Set, Tuple
 from .imports import analyser_imports_fichier, ImportInutile
 from .variables import trouver_variables_inutilisees, VariableInutilisee
+from .analyzer_advanced import analyser_fichier_avance, CodeEntity
 
 
 @dataclass
@@ -64,25 +65,12 @@ class ScannerLimbo(ast.NodeVisitor):
         self.generic_visit(node)
 
 
-def trouver_code_mort(chemin_fichier: str) -> Tuple[List[ObjetCode], List[ObjetCode]]:
-    """Renvoie (code_surement_mort, code_peut_etre_mort)."""
-    scanner = ScannerLimbo(chemin_fichier)
-    definitions, appels = scanner.analyser()
-    
-    morts = []
-    peut_etre = []
-    
-    for obj in definitions:
-        if obj.nom in appels:
-            continue  # C'est utilisé, tout va bien
-            
-        # Si c'est une classe, elle pourrait servir de type hint sans être appelée
-        if obj.type == 'classe':
-            peut_etre.append(obj)
-        else:
-            morts.append(obj)
-            
-    return morts, peut_etre
+def trouver_code_mort(chemin_fichier: str) -> Tuple[List[CodeEntity], List[CodeEntity], List[CodeEntity]]:
+    """
+    Analyse complète d'un fichier.
+    Retourne: (morts, probablement_morts, utilises)
+    """
+    return analyser_fichier_avance(chemin_fichier)
 
 
 def trouver_imports_morts(chemin_fichier: str) -> List[ImportInutile]:
@@ -90,7 +78,7 @@ def trouver_imports_morts(chemin_fichier: str) -> List[ImportInutile]:
     return analyser_imports_fichier(chemin_fichier)
 
 
-def trouver_variables_mortes(chemin_fichier: str):
+def trouver_variables_mortes(chemin_fichier: str) -> List[VariableInutilisee]:
     """Trouve les variables locales inutilisées."""
     contenu = Path(chemin_fichier).read_text(encoding='utf-8')
     return trouver_variables_inutilisees(contenu)
