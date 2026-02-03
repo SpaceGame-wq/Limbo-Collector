@@ -365,6 +365,12 @@ class DetecteurLimbo:
                 morts.append(entite)
         
         return morts, [], utilises
+    
+
+    def _est_racine(self, entite: CodeEntity) -> bool:
+        """Détermine si une entité est un point d'entrée du programme (Standard + Frameworks)."""
+        # On combine les deux nouvelles logiques de détection
+        return self._est_racine_standard(entite) or self._est_une_racine_framework(entite)
 
 
     def _est_une_racine_framework(self, entite: CodeEntity) -> bool:
