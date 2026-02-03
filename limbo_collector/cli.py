@@ -371,10 +371,47 @@ def afficher_resultats_projet(
         print(f"\n{total_suspects} suspect(s) trouvé(s) (mode strict)")
     else:
         print("\nAucun code mort détecté (mode strict)")
+    
+    # Appel du nouveau rapport
+    afficher_rapport_sante(resultat)
 
     print("-" * 60)
 
     return total_certains
+
+
+def afficher_rapport_sante(resultat: ResultatProjet):
+    """Affiche un résumé statistique et un score de santé."""
+    score = resultat.calculer_score_sante()
+    
+    # Détermination de l'appréciation
+    if score >= 90: appreciation = "🌟 Excellent - Votre projet est très propre."
+    elif score >= 75: appreciation = "✅ Bon - Quelques nettoyages mineurs à prévoir."
+    elif score >= 50: appreciation = "⚠️ Passable - La dette technique s'accumule."
+    else: appreciation = "💀 Critique - Votre projet est un cimetière de code."
+
+    # Calcul des totaux
+    total_imports = sum(len(v) for v in resultat.imports_morts_par_fichier.values())
+    total_vars = sum(len(v) for v in resultat.variables_mortes_par_fichier.values())
+    total_morts = len(resultat.code_mort)
+
+    print("\n" + "="*60)
+    print(f"📊 RAPPORT DE SANTÉ LIMBO : {score}/100")
+    print("="*60)
+    print(f"  {appreciation}")
+    print("-"*60)
+    print(f"  📂 Fichiers analysés     : {resultat.fichiers_analyses}")
+    print(f"  📝 Lignes de code (LOC)  : {resultat.total_lignes}")
+    print(f"  📦 Classes/Fonctions mortes: {total_morts}")
+    print(f"  🚚 Imports inutilisés    : {total_imports}")
+    print(f"  Variable(s) fantôme(s)   : {total_vars}")
+    
+    # Barre de progression visuelle
+    barre_longueur = 30
+    remplissage = int(score / 100 * barre_longueur)
+    barre = "█" * remplissage + "░" * (barre_longueur - remplissage)
+    print(f"\n  Score : [{barre}] {score}%")
+    print("="*60 + "\n")
 
 
 def exporter_json_projet(resultat: ResultatProjet, chemin: str) -> None:

@@ -10,6 +10,53 @@ from .imports import analyser_imports_fichier
 from .variables import trouver_variables_inutilisees
 
 
+
+
+# Ajoutez l'import math en haut
+import math
+
+@dataclass
+class ResultatProjet:
+    fichiers_analyses: int
+    total_lignes: int
+    code_mort: List[Tuple[str, CodeEntity]] # (chemin, entite)
+    code_suspect: List[Tuple[str, CodeEntity]]
+    imports_morts_par_fichier: Dict[str, List[ImportInutile]]
+    variables_mortes_par_fichier: Dict[str, List[VariableInutilisee]]
+    erreurs: List[str]
+    stats_parametres: int = 0
+    stats_unreachable: int = 0
+
+    def calculer_score_sante(self) -> float:
+        """Calcule un score de 0 à 100."""
+        if self.total_lignes == 0: return 100.0
+        
+        # Pondération des problèmes
+        poids = {
+            'classe_morte': 8,
+            'fonction_morte': 5,
+            'unreachable': 4,
+            'import_mort': 1,
+            'variable_morte': 1,
+            'param_mort': 1
+        }
+        
+        penalite = (
+            len([e for _, e in self.code_mort if e.type == 'classe']) * poids['classe_morte'] +
+            len([e for _, e in self.code_mort if e.type != 'classe']) * poids['fonction_morte'] +
+            sum(len(v) for v in self.imports_morts_par_fichier.values()) * poids['import_mort'] +
+            sum(len(v) for v in self.variables_mortes_par_fichier.values()) * poids['variable_morte'] +
+            self.stats_unreachable * poids['unreachable'] +
+            self.stats_parametres * poids['param_mort']
+        )
+        
+        # Le score est basé sur la densité de problèmes par rapport à la taille du projet
+        # Plus le projet est grand, plus il "encaisse" de petites erreurs
+        densite = (penalite / (self.total_lignes / 100)) * 2 
+        score = max(0, 100 - densite)
+        return round(score, 1)
+
+
 @dataclass
 class FichierAnalyse:
     """Résultat d'analyse d'un fichier."""
@@ -258,29 +305,27 @@ class ScannerProjet:
                     entite.raison_utilisation = f"Importée par autre fichier"
 
 
-@dataclass
-class ResultatProjet:
-    """Résultat global de l'analyse d'un projet."""
-    fichiers_analyses: int
-    code_mort: List[Tuple[str, CodeEntity]]  # (chemin, entite)
-    code_suspect: List[Tuple[str, CodeEntity]]
-    imports_morts_par_fichier: Dict[str, List[ImportInutile]]
-    variables_mortes_par_fichier: Dict[str, List[VariableInutilisee]]
-    erreurs: List[str]
-
-
 def analyser_projet_complet(chemin: str, config=None) -> ResultatProjet:
     """Analyse complète d'un projet et retourne les résultats structurés."""
     scanner = ScannerProjet(chemin)
     graphe = scanner.scanner(config)
     
+    total_lignes_projet = 0
+
     code_mort = []
     code_suspect = []
     imports_morts = {}
     variables_mortes = {}
     
-    # Analyse chaque fichier avec le détecteur
+    # Analyse chaque fichier avec le détecteur + comptage lignes
     for chemin_fichier, fichier in graphe.fichiers.items():
+        # Compter les lignes du fichier
+        try:
+            p = Path(chemin) / chemin_fichier
+            total_lignes_projet += len(p.read_text(encoding='utf-8').splitlines())
+        except: 
+            pass
+
         detecteur = DetecteurLimbo(
             fichier.entites,
             fichier.appels,
@@ -321,6 +366,7 @@ def analyser_projet_complet(chemin: str, config=None) -> ResultatProjet:
     
     return ResultatProjet(
         fichiers_analyses=len(graphe.fichiers),
+        total_lignes=total_lignes_projet,
         code_mort=code_mort,
         code_suspect=code_suspect,
         imports_morts_par_fichier=imports_morts,
