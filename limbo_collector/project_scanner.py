@@ -1,5 +1,6 @@
 import ast
 from pathlib import Path
+import pathspec
 from dataclasses import dataclass
 from typing import List, Set, Dict, Optional, Tuple, DefaultDict
 from collections import defaultdict
@@ -105,10 +106,53 @@ class GrapheProjet:
 class ScannerProjet:
     """Analyse complète d'un projet Python."""
     
-    def __init__(self, chemin_racine: str):
+    def __init__(self, chemin_racine: str, config=None):
         self.racine = Path(chemin_racine).resolve()
         self.graphe = GrapheProjet(self.racine)
         self.erreurs: List[str] = []
+        self.config = config
+        
+        # Patterns d'exclusion par défaut (même sans .gitignore)
+        self.exclusions_par_defaut = {
+            'venv', '.venv', 'env', '__pycache__', '.git', 
+            '.tox', '.pytest_cache', '.mypy_cache', 'node_modules',
+            '.idea', '.vscode', 'build', 'dist', '.DS_Store'
+        }
+        
+        # Chargement du pathspec (.gitignore)
+        self.spec = self._charger_gitignore()
+    
+    def _charger_gitignore(self) -> Optional[pathspec.PathSpec]:
+        """Charge le fichier .gitignore s'il existe à la racine."""
+        gitignore_path = self.racine / ".gitignore"
+        if gitignore_path.exists():
+            try:
+                lignes = gitignore_path.read_text().splitlines()
+                return pathspec.PathSpec.from_lines('gitwildmatch', lignes)
+            except Exception as e:
+                print(f"Avertissement : impossible de lire .gitignore : {e}")
+        return None
+
+    def _doit_ignorer(self, chemin_relatif: str) -> bool:
+        """Vérifie si un fichier ou dossier doit être ignoré."""
+        path_obj = Path(chemin_relatif)
+        
+        # 1. Vérification des dossiers parents et du fichier contre les défauts
+        # On vérifie si un des segments du chemin est dans les exclusions par défaut
+        parties = path_obj.parts
+        if any(p in self.exclusions_par_defaut for p in parties):
+            return True
+            
+        # 2. Vérification contre le .gitignore (via pathspec)
+        if self.spec and self.spec.match_file(chemin_relatif):
+            return True
+            
+        # 3. Vérification des patterns de la config utilisateur (limbo.json)
+        if self.config and self.config.exclude_patterns:
+            if any(p in chemin_relatif for p in self.config.exclude_patterns):
+                return True
+                
+        return False
         
     def scanner(self, config=None) -> GrapheProjet:
         """Lance l'analyse complète du projet."""
@@ -130,14 +174,16 @@ class ScannerProjet:
         return self.graphe
         
     def _trouver_fichiers_python(self) -> List[Path]:
-        """Trouve tous les fichiers Python du projet."""
+        """Trouve tous les fichiers Python en respectant les filtres."""
         fichiers = []
         for chemin in self.racine.rglob("*.py"):
-            # Ignore les dossiers d'environnement
+            # Obtenir le chemin relatif par rapport à la racine du projet
             rel = str(chemin.relative_to(self.racine))
-            if any(pattern in rel for pattern in ['venv', '__pycache__', '.git', 'node_modules', '.tox']):
-                continue
-            fichiers.append(chemin)
+            
+            # Application de notre nouvelle logique de filtrage
+            if not self._doit_ignorer(rel):
+                fichiers.append(chemin)
+                
         return fichiers
 
     def _analyser_fichier(self, chemin_absolu: Path):
