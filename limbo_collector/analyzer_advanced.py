@@ -113,10 +113,17 @@ class AnalyseurAvance(ast.NodeVisitor):
     def visit_ClassDef(self, node):
         nom_classe = node.name
         
+        # Extraction des noms des classes parentes
+        bases_classe = []
         for base in node.bases:
             if isinstance(base, ast.Name):
-                self.heritages[nom_classe] = base.id
-                self.type_hints.add(base.id)
+                bases_classe.append(base.id)
+            elif isinstance(base, ast.Attribute):
+                bases_classe.append(base.attr)
+        
+        # Enregistrement pour les Type Hints
+        for b in bases_classe:
+            self.type_hints.add(b)
         
         ignoree = (node.lineno in self.lignes_ignorees or 
                    (node.lineno - 1) in self.lignes_ignorees)
@@ -127,6 +134,7 @@ class AnalyseurAvance(ast.NodeVisitor):
             type='classe',
             ligne=node.lineno,
             fichier=self.chemin,
+            bases=bases_classe,
             decorateurs=[self._nom_decorateur(d) for d in node.decorator_list],
             est_ignoree=ignoree
         )
@@ -430,12 +438,22 @@ class DetecteurLimbo:
                 return "probable"
             return "mort"
 
-        # 6. Cas des méthodes (plus complexe)
+        # 6. Cas des méthodes
         if entite.type in ['methode', 'staticmethod', 'classmethod']:
-            # Si la classe parente est vivante, la méthode peut être appelée dynamiquement
+            # Si c'est une méthode publique
             if not entite.nom.startswith('_'):
-                # Si c'est une méthode publique d'une classe utilisée, on est prudent
-                return "probable"
+                # Si la classe parente est connue pour hériter d'un truc externe (ex: Django Model)
+                # ou si elle est instanciée, on marque comme "probable" au lieu de "mort"
+                parent_clef = f"{entite.fichier}::{entite.classe_parent}"
+                parent_entite = self.entites.get(parent_clef)
+                
+                if parent_entite and (parent_entite.bases or parent_entite.est_utilisee):
+                    return "probable"
+            
+            # Si le nom de la méthode est dans les appels globaux (géré par le scanner après)
+            if entite.nom in self.appels:
+                return "utilise"
+                
             return "mort"
 
         # 7. Variables globales

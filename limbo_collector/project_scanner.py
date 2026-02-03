@@ -153,6 +153,43 @@ class GrapheProjet:
                 nom_entite in fichier_importateur.type_hints):
                 return True
         return False
+    
+    def resoudre_heritages_globaux(self):
+        """Propage le statut 'utilisé' à travers la hiérarchie de classes."""
+        
+        # 1. Créer une map nom_classe -> entité pour un accès rapide
+        toutes_classes = {}
+        for fichier in self.fichiers.values():
+            for entite in fichier.entites.values():
+                if entite.type == 'classe':
+                    toutes_classes[entite.nom] = entite
+
+        # 2. Propagation ascendante : Si Enfant est vivant, Parent est vivant
+        # On répète pour gérer les hiérarchies profondes (A <- B <- C)
+        for _ in range(3): 
+            changement = False
+            for nom, entite in toutes_classes.items():
+                if entite.est_utilisee:
+                    for nom_parent in entite.bases:
+                        if nom_parent in toutes_classes:
+                            parent = toutes_classes[nom_parent]
+                            if not parent.est_utilisee:
+                                parent.est_utilisee = True
+                                parent.raison_utilisation = f"Parent de {nom}"
+                                changement = True
+            if not changement: break
+
+    def est_methode_polymorphe_utilisee(self, nom_methode: str, nom_classe: str) -> bool:
+        """
+        Vérifie si une méthode est appelée sur n'importe quelle classe 
+        de la même lignée d'héritage.
+        """
+        # On regarde si ce nom de méthode est appelé n'importe où dans le projet
+        # C'est une approche prudente pour éviter de supprimer des surcharges.
+        for f in self.fichiers.values():
+            if nom_methode in f.appels:
+                return True
+        return False
 
 class ScannerProjet:
     def __init__(self, chemin_racine: str, config=None):
@@ -290,6 +327,9 @@ def analyser_projet_complet(chemin: str, config=None, deep: bool = False) -> Res
     scanner = ScannerProjet(chemin, config)
     graphe = scanner.scanner(config)
     
+    # Résolution de l'héritage avant l'analyse finale
+    graphe.resoudre_heritages_globaux()
+    
     total_lignes_projet = 0
 
     code_mort = []
@@ -319,10 +359,18 @@ def analyser_projet_complet(chemin: str, config=None, deep: bool = False) -> Res
         
         # Filtre final : vérifier si mort localement mais utilisé ailleurs dans le projet
         for entite in morts[:]:
+            # 1. Vérification import classique
             if graphe.est_utilise_par_autre_fichier(chemin_fichier, entite.nom):
                 morts.remove(entite)
                 entite.est_utilisee = True
-
+                continue
+            
+            # 2. Vérification Polymorphisme (pour les méthodes)
+            if entite.type in ['methode', 'staticmethod', 'classmethod']:
+                if graphe.est_methode_polymorphe_utilisee(entite.nom, entite.classe_parent):
+                    morts.remove(entite)
+                    entite.est_utilisee = True
+                    entite.raison_utilisation = "Surcharge potentielle (Polymorphisme)"
         code_mort.extend([(chemin_fichier, m) for m in morts])
         code_suspect.extend([(chemin_fichier, s) for s in suspects])
             

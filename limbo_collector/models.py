@@ -8,6 +8,7 @@ class CodeEntity:
     type: str  # 'fonction', 'classe', 'methode', 'staticmethod', etc.
     ligne: int
     fichier: str
+    bases: List[str] = field(default_factory=list)
     classe_parent: Optional[str] = None
     decorateurs: List[str] = field(default_factory=list)
     est_utilisee: bool = False
