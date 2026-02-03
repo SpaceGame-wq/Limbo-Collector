@@ -33,6 +33,39 @@ class AnalyseurAvance(ast.NodeVisitor):
         for i, ligne in enumerate(self.contenu.splitlines(), 1):
             if "# limbo: ignore" in ligne or "# no-limbo" in ligne:
                 self.lignes_ignorees.add(i)
+    
+    def _generer_signature_structurelle(self, func_node: ast.FunctionDef) -> str:
+        """Génère une signature basée sur la structure logique purifiée."""
+        structure = []
+        
+        # On enregistre les éléments clés sans les noms variables
+        for node in ast.walk(ast.Module(body=func_node.body, type_ignores=[])):
+            # 1. On ignore les noms de variables locales (Name), mais on garde les types d'actions
+            if isinstance(node, (ast.If, ast.IfExp)):
+                structure.append("BRANCH")
+            elif isinstance(node, (ast.For, ast.While, ast.ListComp)):
+                structure.append("LOOP")
+            elif isinstance(node, ast.Call):
+                # Pour les appels, on ne garde que le nom de la fonction appelée
+                # car c'est elle qui définit l'action sémantique
+                if isinstance(node.func, ast.Name):
+                    structure.append(f"CALL:{node.func.id}")
+                elif isinstance(node.func, ast.Attribute):
+                    structure.append(f"CALL:{node.func.attr}")
+            elif isinstance(node, ast.Return):
+                structure.append("RETURN")
+            elif isinstance(node, ast.Raise):
+                structure.append("RAISE")
+            elif isinstance(node, ast.Constant):
+                # On ne garde que le type de la constante (str, int, None)
+                # sauf pour les valeurs critiques comme 0, 1, True, False
+                val = node.value
+                if val in (0, 1, True, False, None):
+                    structure.append(f"CONST:{val}")
+                else:
+                    structure.append(f"CONST:{type(val).__name__}")
+
+        return "-".join(structure)
 
     def analyser(self):
         self.visit(self.arbre)
@@ -140,6 +173,15 @@ class AnalyseurAvance(ast.NodeVisitor):
         
         nom = node.name
         decorateurs = [self._nom_decorateur(d) for d in node.decorator_list]
+
+        # On ne calcule la signature que pour les fonctions assez grandes (> 3 nœuds)
+        # pour éviter de marquer "return None" comme un doublon partout.
+        sig = ""
+        if len(node.body) > 0:
+            sig = self._generer_signature_structurelle(node)
+            # On ignore les fonctions trop simples (ex: pass ou un seul return simple)
+            if sig.count('-') < 3: 
+                sig = ""
         
         if self.classe_actuelle:
             type_methode = 'methode'
@@ -158,7 +200,8 @@ class AnalyseurAvance(ast.NodeVisitor):
                 fichier=self.chemin,
                 classe_parent=self.classe_actuelle,
                 decorateurs=decorateurs,
-                est_ignoree=ignoree
+                est_ignoree=ignoree,
+                signature_structurelle=sig
             )
         else:
             clef = f"{self.chemin}::{nom}"
@@ -168,7 +211,8 @@ class AnalyseurAvance(ast.NodeVisitor):
                 ligne=node.lineno,
                 fichier=self.chemin,
                 decorateurs=decorateurs,
-                est_ignoree=ignoree
+                est_ignoree=ignoree,
+                signature_structurelle=sig
             )
         self.generic_visit(node)
 

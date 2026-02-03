@@ -3,10 +3,12 @@ import json
 import sys
 from pathlib import Path
 from typing import List, Tuple, Optional
-from .models import CodeEntity, ImportInutile, VariableInutilisee, CodeUnreachable, ParametreInutilise
+from .models import CodeEntity, ImportInutile, VariableInutilisee, CodeUnreachable, ParametreInutilise, GroupeDuplique
 from .scanner import trouver_code_mort, trouver_imports_morts, trouver_variables_mortes, trouver_unreachable, trouver_params_morts
 from .project_scanner import analyser_projet_complet, ResultatProjet
 from .config import LimboConfig
+from .analyzer_advanced import AnalyseurAvance
+from collections import defaultdict
 
 
 def creer_parser() -> argparse.ArgumentParser:
@@ -302,10 +304,27 @@ def analyser_fichier(chemin: Path, args, config: LimboConfig) -> int:
     unreachable = trouver_unreachable(str(chemin)) if args.unreachable else []
     params = trouver_params_morts(str(chemin)) if args.params else []
 
+    contenu = chemin.read_text(encoding='utf-8')
+    analyseur = AnalyseurAvance(str(chemin), contenu)
+    entites, _, _, _, _, _ = analyseur.analyser()
+
+    # Logique de détection de doublons locale
+    signatures = defaultdict(list)
+    for entite in entites.values():
+        if entite.signature_structurelle:
+            signatures[entite.signature_structurelle].append((str(chemin), entite))
+    
+    doublons_locaux = [
+        GroupeDuplique(sig, membres) 
+        for sig, membres in signatures.items() if len(membres) > 1
+    ]
+
     if args.json:
         exporter_json_fichier(morts, suspects, imports, variables, unreachable, params, str(chemin))
     else:
         total = afficher_resultats_fichier(morts, suspects, imports, variables, unreachable, params, chemin.name, args.strict)
+        if doublons_locaux:
+            afficher_doublons(doublons_locaux)
         return 1 if total > 0 else 0
 
     return 0
@@ -322,6 +341,21 @@ def formater_entite_projet(item: Tuple[str, CodeEntity]) -> str:
         symbole = "📌 "
         
     return f"{symbole}{chemin}:{entite.ligne} → {formater_entite(entite)}"
+
+
+def afficher_doublons(doublons: List):
+    if not doublons:
+        return
+        
+    print(f"\nCode potentiellement dupliqué ({len(doublons)} groupes) :")
+    for i, groupe in enumerate(doublons, 1):
+        print(f"  Groupe #{i} (Structure logique identique) :")
+        for chemin, entite in groupe.entites:
+            nom_complet = f"{entite.classe_parent}.{entite.nom}" if entite.classe_parent else entite.nom
+            
+            # On affiche la taille de la fonction pour donner une idée de l'importance
+            taille = entite.signature_structurelle.count('-')
+            print(f"    → {chemin}:{entite.ligne} ({nom_complet}) [Force: {taille}]")
 
 
 def afficher_resultats_projet(
@@ -381,6 +415,8 @@ def afficher_resultats_projet(
         print(f"\n{total_suspects} suspect(s) trouvé(s) (mode strict)")
     else:
         print("\nAucun code mort détecté (mode strict)")
+    
+    afficher_doublons(resultat.doublons)
     
     # Appel du nouveau rapport
     afficher_rapport_sante(resultat)

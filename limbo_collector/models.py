@@ -1,5 +1,5 @@
 from dataclasses import dataclass, field
-from typing import List, Optional
+from typing import List, Optional, Tuple
 
 @dataclass
 class CodeEntity:
@@ -13,6 +13,7 @@ class CodeEntity:
     est_utilisee: bool = False
     raison_utilisation: str = ""
     est_ignoree: bool = False
+    signature_structurelle: str = ""
 
 @dataclass
 class ImportInutile:
@@ -47,3 +48,8 @@ class ParametreInutilise:
     position: int
     est_kwargs: bool
     est_args: bool
+
+@dataclass
+class GroupeDuplique:
+    signature: str
+    entites: List[Tuple[str, CodeEntity]] # (chemin, entite)

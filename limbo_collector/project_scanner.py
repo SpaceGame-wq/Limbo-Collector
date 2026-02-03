@@ -1,19 +1,14 @@
 import ast
 from pathlib import Path
 import pathspec
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import List, Set, Dict, Optional, Tuple, DefaultDict
 from collections import defaultdict
-from .models import CodeEntity, ImportInutile, VariableInutilisee
+from .models import CodeEntity, ImportInutile, VariableInutilisee, GroupeDuplique
 from .analyzer_advanced import AnalyseurAvance, DetecteurLimbo
 from .imports import analyser_imports_fichier
 from .variables import trouver_variables_inutilisees
 
-
-
-
-# Ajoutez l'import math en haut
-import math
 
 @dataclass
 class ResultatProjet:
@@ -26,6 +21,7 @@ class ResultatProjet:
     erreurs: List[str]
     stats_parametres: int = 0
     stats_unreachable: int = 0
+    doublons: List[GroupeDuplique] = field(default_factory=list)
 
     def calculer_score_sante(self) -> float:
         """Calcule un score de 0 à 100."""
@@ -365,6 +361,23 @@ def analyser_projet_complet(chemin: str, config=None) -> ResultatProjet:
             variables_mortes[chemin_fichier] = trouver_variables_inutilisees(contenu)
         except Exception:
             variables_mortes[chemin_fichier] = []
+
+    # Après avoir collecté toutes les entités, on cherche les doublons
+    toutes_les_entites = []
+    for chemin_f, fichier in graphe.fichiers.items():
+        for entite in fichier.entites.values():
+            if entite.signature_structurelle: # On n'analyse que si une signature existe
+                toutes_les_entites.append((chemin_f, entite))
+                
+    # Regroupement par signature
+    signatures = defaultdict(list)
+    for chemin_f, entite in toutes_les_entites:
+        signatures[entite.signature_structurelle].append((chemin_f, entite))
+        
+    doublons = []
+    for sig, membres in signatures.items():
+        if len(membres) > 1:
+            doublons.append(GroupeDuplique(signature=sig, entites=membres))
     
     return ResultatProjet(
         fichiers_analyses=len(graphe.fichiers),
@@ -373,5 +386,6 @@ def analyser_projet_complet(chemin: str, config=None) -> ResultatProjet:
         code_suspect=code_suspect,
         imports_morts_par_fichier=imports_morts,
         variables_mortes_par_fichier=variables_mortes,
-        erreurs=scanner.erreurs
+        erreurs=scanner.erreurs,
+        doublons=doublons
     )
