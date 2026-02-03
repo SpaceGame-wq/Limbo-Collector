@@ -66,7 +66,7 @@ class FichierAnalyse:
     type_hints: Set[str]
     exports_all: Set[str]
     exports: Set[str]  # Ce que ce fichier exporte (pour d'autres fichiers)
-    imports_externes: Dict[str, str]  # nom -> origine (fichier ou module)
+    imports_externes: List[Dict] # Liste d'objets import (nom, origine, niveau, est_star)
 
 
 class GrapheProjet:
@@ -75,98 +75,98 @@ class GrapheProjet:
     def __init__(self, racine: Path):
         self.racine = racine
         self.fichiers: Dict[str, FichierAnalyse] = {}
+        # Map: "nom.du.module" -> "chemin/vers/fichier.py"
+        self.module_to_file: Dict[str, str] = {}
         self.imports_entre_fichiers: DefaultDict[str, Set[str]] = defaultdict(set)
-        self.modules_projet: Set[str] = set()
         
     def ajouter_fichier(self, chemin_relatif: str, analyse: FichierAnalyse):
         """Ajoute un fichier analysé au graphe."""
         self.fichiers[chemin_relatif] = analyse
-        self.modules_projet.add(chemin_relatif.replace('/', '.').replace('\\', '.').replace('.py', ''))
-        
+        # Convertit le chemin en nom de module Python
+        module_path = chemin_relatif.replace('\\', '/').replace('.py', '')
+        if module_path.endswith('/__init__'):
+            module_path = module_path[:-9]
+        module_name = module_path.replace('/', '.')
+        self.module_to_file[module_name] = chemin_relatif
+
     def resoudre_imports(self):
-        """Détermine quels imports pointent vers d'autres fichiers du projet."""
+        """Détermine les liens de dépendances entre les fichiers du projet."""
         for chemin, fichier in self.fichiers.items():
-            for nom, origine in fichier.imports_externes.items():
-                # Vérifie si l'import vient d'un fichier du projet
-                if origine.startswith('.'):
-                    # Import relatif
-                    cible = self._resoudre_import_relatif(chemin, origine)
-                    if cible and cible in self.fichiers:
-                        self.imports_entre_fichiers[cible].add(chemin)
-                else:
-                    # Import absolu, vérifie si c'est un module du projet
-                    cible = origine.replace('.', '/') + '.py'
-                    if cible in self.fichiers:
-                        self.imports_entre_fichiers[cible].add(chemin)
-                        
-    def _resoudre_import_relatif(self, source: str, import_rel: str) -> Optional[str]:
-        """Résout un import relatif (ex: from . import x ou from .. import y)."""
-        niveaux = 0
-        i = 0
-        while i < len(import_rel) and import_rel[i] == '.':
-            niveaux += 1
-            i += 1
-            
-        parties_source = source.replace('\\', '/').split('/')[:-1]  # Enlève le nom de fichier
+            for imp in fichier.imports_externes:
+                cible_chemin = self._trouver_fichier_cible(chemin, imp)
+                if cible_chemin and cible_chemin in self.fichiers:
+                    self.imports_entre_fichiers[cible_chemin].add(chemin)
+                    
+                    # Si c'est un "from module import *", on considère toutes les entités
+                    # du fichier cible comme potentiellement utilisées (principe de précaution)
+                    if imp.get('est_star'):
+                        for entite in self.fichiers[cible_chemin].entites.values():
+                            entite.est_utilisee = True
+                            entite.raison_utilisation = f"Import * dans {chemin}"
+
+    def _trouver_fichier_cible(self, source_path: str, imp: Dict) -> Optional[str]:
+        origine = imp['origine']
+        niveau = imp['niveau']
         
-        if niveaux > len(parties_source):
-            return None  # Import impossible
+        # 1. Gestion des imports relatifs (niveau > 0)
+        if niveau > 0:
+            parties_source = source_path.replace('\\', '/').split('/')
+            # Si le fichier est un __init__.py, il compte comme le dossier lui-même
+            if parties_source[-1] == '__init__.py':
+                base_dir = parties_source[:-1]
+            else:
+                base_dir = parties_source[:-1]
             
-        base = parties_source[:-niveaux] if niveaux > 0 else parties_source
-        reste = import_rel[i:].replace('.', '/')
-        
-        if reste:
-            return '/'.join(base + [reste]) + '.py'
-        else:
-            # from . import module
-            return '/'.join(base) + '.py'
+            # Remonter les niveaux (..)
+            for _ in range(niveau - 1):
+                if base_dir: base_dir.pop()
             
+            prefix_relatif = '.'.join(base_dir).replace('/', '.')
+            module_complet = f"{prefix_relatif}.{origine}" if origine else prefix_relatif
+            return self.module_to_file.get(module_complet)
+
+        # 2. Gestion des imports absolus
+        # On vérifie si le module ou ses parents existent dans notre projet
+        parties_origine = origine.split('.')
+        while parties_origine:
+            module_test = '.'.join(parties_origine)
+            if module_test in self.module_to_file:
+                return self.module_to_file[module_test]
+            parties_origine.pop() # On remonte (ex: monpkg.sous.func -> monpkg.sous)
+            
+        return None
+
     def est_utilise_par_autre_fichier(self, chemin: str, nom_entite: str) -> bool:
         """Vérifie si une entité est importée par un autre fichier."""
         if chemin not in self.fichiers:
             return False
-            
-        fichier = self.fichiers[chemin]
         
-        # Regarde tous les fichiers qui importent celui-ci
         for importateur in self.imports_entre_fichiers.get(chemin, set()):
             if importateur not in self.fichiers:
                 continue
             fichier_importateur = self.fichiers[importateur]
-            
+
             # Vérifie si l'entité est utilisée dans le fichier importateur
-            if nom_entite in fichier_importateur.appels:
+            if (nom_entite in fichier_importateur.appels or 
+                nom_entite in fichier_importateur.instanciations or 
+                nom_entite in fichier_importateur.references or 
+                nom_entite in fichier_importateur.type_hints):
                 return True
-            if nom_entite in fichier_importateur.instanciations:
-                return True
-            if nom_entite in fichier_importateur.references:
-                return True
-            # Vérifie si utilisé comme type hint dans un autre fichier
-            if nom_entite in fichier_importateur.type_hints:
-                return True
-                
         return False
 
-
 class ScannerProjet:
-    """Analyse complète d'un projet Python."""
-    
     def __init__(self, chemin_racine: str, config=None):
         self.racine = Path(chemin_racine).resolve()
         self.graphe = GrapheProjet(self.racine)
         self.erreurs: List[str] = []
         self.config = config
-        
-        # Patterns d'exclusion par défaut (même sans .gitignore)
         self.exclusions_par_defaut = {
-            'venv', '.venv', 'env', '__pycache__', '.git', 
+            'venv', '.venv', 'env', '__pycache__', '.git',
             '.tox', '.pytest_cache', '.mypy_cache', 'node_modules',
             '.idea', '.vscode', 'build', 'dist', '.DS_Store'
         }
-        
-        # Chargement du pathspec (.gitignore)
         self.spec = self._charger_gitignore()
-    
+
     def _charger_gitignore(self) -> Optional[pathspec.PathSpec]:
         """Charge le fichier .gitignore s'il existe à la racine."""
         gitignore_path = self.racine / ".gitignore"
@@ -201,7 +201,7 @@ class ScannerProjet:
         
     def scanner(self, config=None) -> GrapheProjet:
         """Lance l'analyse complète du projet."""
-        fichiers_python = self._trouver_fichiers_python()
+        fichiers_python = [p for p in self.racine.rglob("*.py") if not self._doit_ignorer(str(p.relative_to(self.racine)))]
         
         # Phase 1: Analyse individuelle de chaque fichier
         for chemin_absolu in fichiers_python:
@@ -217,19 +217,6 @@ class ScannerProjet:
         self._evaluer_utilisation_globale()
         
         return self.graphe
-        
-    def _trouver_fichiers_python(self) -> List[Path]:
-        """Trouve tous les fichiers Python en respectant les filtres."""
-        fichiers = []
-        for chemin in self.racine.rglob("*.py"):
-            # Obtenir le chemin relatif par rapport à la racine du projet
-            rel = str(chemin.relative_to(self.racine))
-            
-            # Application de notre nouvelle logique de filtrage
-            if not self._doit_ignorer(rel):
-                fichiers.append(chemin)
-                
-        return fichiers
 
     def _analyser_fichier(self, chemin_absolu: Path):
         """Analyse un fichier individuel."""
@@ -247,7 +234,7 @@ class ScannerProjet:
                 exports.add(entite.nom)
                 
         # Extrait les imports pour résolution ultérieure
-        imports_externes = self._extraire_imports(contenu)
+        imports_externes = self._extraire_imports_detailles(contenu)
         
         fichier_analyse = FichierAnalyse(
             chemin=rel,
@@ -263,32 +250,27 @@ class ScannerProjet:
         
         self.graphe.ajouter_fichier(rel, fichier_analyse)
 
-    def _extraire_imports(self, contenu: str) -> Dict[str, str]:
-        """Extrait tous les imports d'un fichier."""
-        imports = {}
+    def _extraire_imports_detailles(self, contenu: str) -> List[Dict]:
+        """Extrait les imports avec niveau et détection de star import."""
+        resultats = []
         try:
             arbre = ast.parse(contenu)
             for node in ast.walk(arbre):
                 if isinstance(node, ast.Import):
                     for alias in node.names:
-                        nom = alias.asname or alias.name
-                        imports[nom] = alias.name
+                        resultats.append({'nom': alias.asname or alias.name, 'origine': alias.name, 'niveau': 0, 'est_star': False})
                 elif isinstance(node, ast.ImportFrom):
-                    module = node.module or ""
-                    niveau = node.level  # 0 = absolu, 1 = relatif, 2 = parent, etc.
-                    
-                    prefix = "." * niveau
-                    if module:
-                        origine = prefix + module
-                    else:
-                        origine = prefix
-                        
+                    est_star = any(alias.name == '*' for alias in node.names)
                     for alias in node.names:
-                        nom = alias.asname or alias.name
-                        imports[nom] = origine + "." + alias.name if origine else alias.name
+                        resultats.append({
+                            'nom': alias.asname or alias.name,
+                            'origine': node.module or '',
+                            'niveau': node.level,
+                            'est_star': est_star
+                        })
         except SyntaxError:
             pass
-        return imports
+        return resultats
         
     def _evaluer_utilisation_globale(self):
         """Marque les entités utilisées via imports inter-fichiers."""
@@ -305,7 +287,7 @@ class ScannerProjet:
 
 def analyser_projet_complet(chemin: str, config=None, deep: bool = False) -> ResultatProjet:
     """Analyse complète d'un projet et retourne les résultats structurés."""
-    scanner = ScannerProjet(chemin)
+    scanner = ScannerProjet(chemin, config)
     graphe = scanner.scanner(config)
     
     total_lignes_projet = 0
@@ -335,44 +317,29 @@ def analyser_projet_complet(chemin: str, config=None, deep: bool = False) -> Res
         
         morts, suspects, utilises = detecteur.analyser(recursive=deep)
         
-        # Filtre: une entité "morte" localement mais exportée et utilisée ailleurs
-        # est en fait vivante
+        # Filtre final : vérifier si mort localement mais utilisé ailleurs dans le projet
         for entite in morts[:]:
             if graphe.est_utilise_par_autre_fichier(chemin_fichier, entite.nom):
                 morts.remove(entite)
-                entite.raison_utilisation = "Utilisée via import"
-                # Ne pas ajouter à suspects, c'est vraiment utilisée
-        
-        for m in morts:
-            code_mort.append((chemin_fichier, m))
-        for s in suspects:
-            code_suspect.append((chemin_fichier, s))
+                entite.est_utilisee = True
+
+        code_mort.extend([(chemin_fichier, m) for m in morts])
+        code_suspect.extend([(chemin_fichier, s) for s in suspects])
             
-        # Imports inutilisés (analyse locale seulement)
         try:
-            chemin_absolu = Path(chemin) / chemin_fichier
-            imports_morts[chemin_fichier] = analyser_imports_fichier(str(chemin_absolu))
-        except Exception:
+            abs_p = str(Path(chemin) / chemin_fichier)
+            imports_morts[chemin_fichier] = analyser_imports_fichier(abs_p)
+            variables_mortes[chemin_fichier] = trouver_variables_inutilisees(Path(abs_p).read_text(encoding='utf-8'))
+        except:
             imports_morts[chemin_fichier] = []
-            
-        # Variables inutilisées
-        try:
-            contenu = (Path(chemin) / chemin_fichier).read_text(encoding='utf-8')
-            variables_mortes[chemin_fichier] = trouver_variables_inutilisees(contenu)
-        except Exception:
             variables_mortes[chemin_fichier] = []
 
-    # Après avoir collecté toutes les entités, on cherche les doublons
-    toutes_les_entites = []
+    # Détection des doublons
+    signatures = defaultdict(list)
     for chemin_f, fichier in graphe.fichiers.items():
         for entite in fichier.entites.values():
             if entite.signature_structurelle: # On n'analyse que si une signature existe
-                toutes_les_entites.append((chemin_f, entite))
-                
-    # Regroupement par signature
-    signatures = defaultdict(list)
-    for chemin_f, entite in toutes_les_entites:
-        signatures[entite.signature_structurelle].append((chemin_f, entite))
+                signatures[entite.signature_structurelle].append((chemin_f, entite))
         
     doublons = []
     for sig, membres in signatures.items():
