@@ -78,6 +78,12 @@ Exemples d'utilisation:
         action="store_true",
         help="Détecte les paramètres inutilisés"
     )
+    parser.add_argument(
+        "--deep",
+        action="store_true",
+        help="Analyse récursive: si A appelle B mais que A est mort, B est mort aussi."
+    )
+    return parser
 
     return parser
 
@@ -298,7 +304,7 @@ def analyser_fichier(chemin: Path, args, config: LimboConfig) -> int:
     if chemin.suffix != ".py":
         print(f"Avertissement : {chemin} n'est pas un fichier Python", file=sys.stderr)
 
-    morts, suspects, _ = ([], [], []) if args.no_functions else trouver_code_mort(str(chemin))
+    morts, suspects, _ = ([], [], []) if args.no_functions else trouver_code_mort(str(chemin), deep=args.deep)
     imports = [] if args.no_imports else trouver_imports_morts(str(chemin))
     variables = [] if args.no_variables else trouver_variables_mortes(str(chemin))
     unreachable = trouver_unreachable(str(chemin)) if args.unreachable else []
@@ -521,7 +527,7 @@ def analyser_dossier(chemin: Path, args, config: LimboConfig) -> int:
     Analyse un dossier complet.
     Retourne le code de sortie (0 = propre, 1 = problèmes trouvés).
     """
-    resultat = analyser_projet_complet(str(chemin), config)
+    resultat = analyser_projet_complet(str(chemin), config, deep=args.deep)
 
     if args.json:
         exporter_json_projet(resultat, str(chemin))

@@ -303,7 +303,7 @@ class ScannerProjet:
                     entite.raison_utilisation = f"Importée par autre fichier"
 
 
-def analyser_projet_complet(chemin: str, config=None) -> ResultatProjet:
+def analyser_projet_complet(chemin: str, config=None, deep: bool = False) -> ResultatProjet:
     """Analyse complète d'un projet et retourne les résultats structurés."""
     scanner = ScannerProjet(chemin)
     graphe = scanner.scanner(config)
@@ -333,7 +333,7 @@ def analyser_projet_complet(chemin: str, config=None) -> ResultatProjet:
             fichier.exports_all
         )
         
-        morts, suspects, utilises = detecteur.analyser()
+        morts, suspects, utilises = detecteur.analyser(recursive=deep)
         
         # Filtre: une entité "morte" localement mais exportée et utilisée ailleurs
         # est en fait vivante

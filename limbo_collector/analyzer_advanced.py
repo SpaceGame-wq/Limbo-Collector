@@ -25,6 +25,8 @@ class AnalyseurAvance(ast.NodeVisitor):
         self.lignes_ignorees: Set[int] = set() # Pour # limbo: ignore
         self.classe_actuelle: Optional[str] = None
         self.dans_fonction = False
+
+        self.entite_actuelle: Optional[str] = None
         
         self._scanner_commentaires()
 
@@ -214,18 +216,25 @@ class AnalyseurAvance(ast.NodeVisitor):
                 est_ignoree=ignoree,
                 signature_structurelle=sig
             )
+        
+        ancienne_entite = self.entite_actuelle
+        self.entite_actuelle = clef
+        
         self.generic_visit(node)
+        self.entite_actuelle = ancienne_entite
 
     def visit_Call(self, node):
-        func = node.func
-        if isinstance(func, ast.Name):
-            self.appels.add(func.id)
-            if func.id and func.id[0].isupper():
-                self.instanciations.add(func.id)
-        elif isinstance(func, ast.Attribute):
-            self.appels.add(func.attr)
-            if isinstance(func.value, ast.Name):
-                self.references_attributs[func.value.id].add(func.attr)
+        nom_appele = ""
+        if isinstance(node.func, ast.Name):
+            nom_appele = node.func.id
+        elif isinstance(node.func, ast.Attribute):
+            nom_appele = node.func.attr
+        
+        if nom_appele:
+            self.appels.add(nom_appele)
+            if self.entite_actuelle and self.entite_actuelle in self.entites:
+                self.entites[self.entite_actuelle].appels_sortants.add(nom_appele)
+        
         self.generic_visit(node)
         
     def visit_AnnAssign(self, node):
@@ -278,6 +287,7 @@ class DetecteurLimbo:
         self.references_attributs = references_attributs
         self.type_hints = type_hints
         self.exports_all = exports_all
+        self.vivants_finaux: Set[str] = set()
         
         self.methodes_magiques = {
             '__init__', '__del__', '__repr__', '__str__', '__eq__', '__ne__',
@@ -297,23 +307,82 @@ class DetecteurLimbo:
             'test'
         }
     
-    def analyser(self) -> Tuple[List[CodeEntity], List[CodeEntity], List[CodeEntity]]:
-        morts = []
-        probablement_morts = []
-        utilises = []
-        
-        for clef, entite in self.entites.items():
-            statut = self._evaluer_entite(entite)
+    def analyser(self, recursive: bool = False) -> Tuple[List[CodeEntity], List[CodeEntity], List[CodeEntity]]:
+        if not recursive:
+            # Mode classique
+            morts = []
+            probablement_morts = []
+            utilises = []
             
-            if statut == "utilise":
-                utilises.append(entite)
-                entite.est_utilisee = True
-            elif statut == "mort":
-                morts.append(entite)
-            elif statut == "probable":
-                probablement_morts.append(entite)
+            for clef, entite in self.entites.items():
+                statut = self._evaluer_entite(entite)
+                
+                if statut == "utilise":
+                    utilises.append(entite)
+                    entite.est_utilisee = True
+                elif statut == "mort":
+                    morts.append(entite)
+                elif statut == "probable":
+                    probablement_morts.append(entite)
+            
+            return morts, probablement_morts, utilises
         
-        return morts, probablement_morts, utilises
+        # Mode recursive
+        return self._analyser_recursive()
+
+    def _analyser_recursive(self) -> Tuple[List[CodeEntity], List[CodeEntity], List[CodeEntity]]:
+        morts = []
+        utilises = []
+        file_a_traiter = []
+        self.vivants_finaux = set()
+
+        # 1. On ne part QUE des vraies racines
+        for clef, entite in self.entites.items():
+            if self._est_racine(entite):
+                self.vivants_finaux.add(clef)
+                file_a_traiter.append(clef)
+
+        # 2. Propagation
+        while file_a_traiter:
+            clef_actuelle = file_a_traiter.pop(0)
+            entite_actuelle = self.entites[clef_actuelle]
+            
+            for nom_appele in entite_actuelle.appels_sortants:
+                # On cherche l'entité correspondante dans LE MÊME FICHIER ou via import
+                for clef_cible, entite_cible in self.entites.items():
+                    if entite_cible.nom == nom_appele and clef_cible not in self.vivants_finaux:
+                        self.vivants_finaux.add(clef_cible)
+                        file_a_traiter.append(clef_cible)
+
+        # 3. Récupération des résultats
+        for clef, entite in self.entites.items():
+            if clef in self.vivants_finaux:
+                entite.est_utilisee = True
+                utilises.append(entite)
+            else:
+                morts.append(entite)
+        
+        return morts, [], utilises
+
+    def _est_racine(self, entite: CodeEntity) -> bool:
+        """Détermine si une entité est un point d'entrée du programme."""
+        if entite.est_ignoree: return True
+        if entite.nom in self.exports_all: return True
+        if entite.nom in self.methodes_magiques: return True
+        
+        # Décorateurs de frameworks (API, Tâches, etc.)
+        deco_root = ['app.route', 'router.get', 'task', 'pytest.fixture', 'fixture']
+        if any(d in deco_root for d in entite.decorateurs): return True
+        
+        # Noms standards d'entrée
+        if entite.nom in ['main', 'run', 'app', 'create_app', 'cli', 'application']:
+            return True
+            
+        # Tests
+        if (entite.fichier.startswith('test_') or '/test_' in entite.fichier) and entite.nom.startswith('test_'):
+            return True
+            
+        return False       
 
     def _evaluer_entite(self, entite: CodeEntity) -> str:
             
@@ -394,10 +463,10 @@ class DetecteurLimbo:
         return "probable"
 
 
-def analyser_fichier_avance(chemin: str) -> Tuple[List[CodeEntity], List[CodeEntity], List[CodeEntity]]:
+def analyser_fichier_avance(chemin: str, deep: bool = False) -> Tuple[List[CodeEntity], List[CodeEntity], List[CodeEntity]]:
     contenu = Path(chemin).read_text(encoding='utf-8')
     analyseur = AnalyseurAvance(chemin, contenu)
     entites, appels, instanciations, references, type_hints, exports_all = analyseur.analyser()
     
     detecteur = DetecteurLimbo(entites, appels, instanciations, references, type_hints, exports_all)
-    return detecteur.analyser()
+    return detecteur.analyser(recursive=deep)

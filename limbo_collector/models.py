@@ -1,5 +1,5 @@
 from dataclasses import dataclass, field
-from typing import List, Optional, Tuple
+from typing import List, Optional, Tuple, Set
 
 @dataclass
 class CodeEntity:
@@ -14,6 +14,7 @@ class CodeEntity:
     raison_utilisation: str = ""
     est_ignoree: bool = False
     signature_structurelle: str = ""
+    appels_sortants: Set[str] = field(default_factory=set)
 
 @dataclass
 class ImportInutile:

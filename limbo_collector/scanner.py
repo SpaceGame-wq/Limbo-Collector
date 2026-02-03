@@ -8,12 +8,12 @@ from .unreachable import trouver_code_unreachable
 from .parameters import trouver_parametres_inutilises
 
 
-def trouver_code_mort(chemin_fichier: str) -> Tuple[List[CodeEntity], List[CodeEntity], List[CodeEntity]]:
+def trouver_code_mort(chemin_fichier: str, deep: bool = False) -> Tuple[List[CodeEntity], List[CodeEntity], List[CodeEntity]]:
     """
     Analyse complète d'un fichier pour trouver fonctions et classes inutilisées.
     Retourne: (morts, probablement_morts, utilises)
     """
-    return analyser_fichier_avance(chemin_fichier)
+    return analyser_fichier_avance(chemin_fichier, deep=deep)
 
 
 def trouver_imports_morts(chemin_fichier: str) -> List[ImportInutile]:
