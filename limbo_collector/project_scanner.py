@@ -17,6 +17,7 @@ class FichierAnalyse:
     appels: Set[str]
     instanciations: Set[str]
     references: Dict[str, Set[str]]
+    type_hints: Set[str]
     exports: Set[str]  # Ce que ce fichier exporte (pour d'autres fichiers)
     imports_externes: Dict[str, str]  # nom -> origine (fichier ou module)
 
@@ -93,6 +94,9 @@ class GrapheProjet:
                 return True
             if nom_entite in fichier_importateur.references:
                 return True
+            # Vérifie si utilisé comme type hint dans un autre fichier
+            if nom_entite in fichier_importateur.type_hints:
+                return True
                 
         return False
 
@@ -142,7 +146,7 @@ class ScannerProjet:
         
         # Analyse AST
         analyseur = AnalyseurAvance(rel, contenu)
-        entites, appels, instanciations, references = analyseur.analyser()
+        entites, appels, instanciations, references, type_hints = analyseur.analyser()
         
         # Extrait les exports (ce qui est public)
         exports = set()
@@ -159,12 +163,13 @@ class ScannerProjet:
             appels=appels,
             instanciations=instanciations,
             references=references,
+            type_hints=type_hints,
             exports=exports,
             imports_externes=imports_externes
         )
         
         self.graphe.ajouter_fichier(rel, fichier_analyse)
-        
+
     def _extraire_imports(self, contenu: str) -> Dict[str, str]:
         """Extrait tous les imports d'un fichier."""
         imports = {}
@@ -232,7 +237,8 @@ def analyser_projet_complet(chemin: str, config=None) -> ResultatProjet:
             fichier.entites,
             fichier.appels,
             fichier.instanciations,
-            fichier.references
+            fichier.references,
+            fichier.type_hints
         )
         
         morts, suspects, utilises = detecteur.analyser()

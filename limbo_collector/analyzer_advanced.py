@@ -1,6 +1,6 @@
 import ast
 from pathlib import Path
-from typing import List, Set, Dict, Optional, Tuple
+from typing import List, Set, Dict, Optional, Tuple, Any
 from collections import defaultdict
 from .models import CodeEntity
 
@@ -8,7 +8,10 @@ class AnalyseurAvance(ast.NodeVisitor):
     def __init__(self, chemin_fichier: str, contenu: str):
         self.chemin = chemin_fichier
         self.contenu = contenu
-        self.arbre = ast.parse(contenu)
+        try:
+            self.arbre = ast.parse(contenu)
+        except SyntaxError:
+            self.arbre = ast.Module(body=[], type_ignores=[])
         
         self.entites: Dict[str, CodeEntity] = {}
         self.heritages: Dict[str, str] = {}
@@ -16,38 +19,35 @@ class AnalyseurAvance(ast.NodeVisitor):
         self.instanciations: Set[str] = set()
         self.references_attributs: Dict[str, Set[str]] = defaultdict(set)
         self.imports: Dict[str, str] = {}
+        self.type_hints: Set[str] = set()
         
         self.classe_actuelle: Optional[str] = None
         
     def analyser(self):
-        self._collecter_definitions()
-        self._collecter_utilisations()
+        self.visit(self.arbre)
         self._resoudre_heritages()
-        return self.entites, self.appels, self.instanciations, self.references_attributs
-    
-    def _collecter_definitions(self):
-        for node in ast.walk(self.arbre):
-            if isinstance(node, ast.ClassDef):
-                self._traiter_classe(node)
-            elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                self._traiter_fonction(node)
-            elif isinstance(node, ast.Import):
-                for alias in node.names:
-                    nom = alias.asname or alias.name
-                    self.imports[nom] = alias.name
-            elif isinstance(node, ast.ImportFrom):
-                module = node.module or ""
-                for alias in node.names:
-                    nom = alias.asname or alias.name
-                    self.imports[nom] = f"{module}.{alias.name}"
-    
-    def _traiter_classe(self, node: ast.ClassDef):
+        return self.entites, self.appels, self.instanciations, self.references_attributs, self.type_hints
+
+    def visit_Import(self, node):
+        for alias in node.names:
+            nom = alias.asname or alias.name
+            self.imports[nom] = alias.name
+        self.generic_visit(node)
+
+    def visit_ImportFrom(self, node):
+        module = node.module or ""
+        for alias in node.names:
+            nom = alias.asname or alias.name
+            self.imports[nom] = f"{module}.{alias.name}"
+        self.generic_visit(node)
+
+    def visit_ClassDef(self, node):
         nom_classe = node.name
-        self.classe_actuelle = nom_classe
         
         for base in node.bases:
             if isinstance(base, ast.Name):
                 self.heritages[nom_classe] = base.id
+                self.type_hints.add(base.id)
         
         clef = f"{self.chemin}::{nom_classe}"
         self.entites[clef] = CodeEntity(
@@ -58,50 +58,97 @@ class AnalyseurAvance(ast.NodeVisitor):
             decorateurs=[self._nom_decorateur(d) for d in node.decorator_list]
         )
         
-        for item in node.body:
-            if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                self._traiter_methode(item, nom_classe)
+        ancien_contexte = self.classe_actuelle
+        self.classe_actuelle = nom_classe
+        self.generic_visit(node)
+        self.classe_actuelle = ancien_contexte
+
+    def visit_FunctionDef(self, node):
+        self._traiter_fonction_ou_methode(node)
         
-        self.classe_actuelle = None
-    
-    def _traiter_methode(self, node: ast.FunctionDef, classe_parent: str):
-        nom_methode = node.name
+    def visit_AsyncFunctionDef(self, node):
+        self._traiter_fonction_ou_methode(node)
+
+    def _traiter_fonction_ou_methode(self, node):
+        # Récupération des types (retour et arguments)
+        if node.returns:
+            self._extraire_types_annotation(node.returns)
+        for arg in node.args.args:
+            if arg.annotation:
+                self._extraire_types_annotation(arg.annotation)
         
-        type_methode = 'methode'
-        decorateurs_noms = [self._nom_decorateur(d) for d in node.decorator_list]
+        nom = node.name
+        decorateurs = [self._nom_decorateur(d) for d in node.decorator_list]
         
-        if 'staticmethod' in decorateurs_noms:
-            type_methode = 'staticmethod'
-        elif 'classmethod' in decorateurs_noms:
-            type_methode = 'classmethod'
-        elif 'property' in decorateurs_noms:
-            type_methode = 'property'
-        
-        clef = f"{self.chemin}::{classe_parent}.{nom_methode}"
-        self.entites[clef] = CodeEntity(
-            nom=nom_methode,
-            type=type_methode,
-            ligne=node.lineno,
-            fichier=self.chemin,
-            classe_parent=classe_parent,
-            decorateurs=decorateurs_noms
-        )
-    
-    def _traiter_fonction(self, node: ast.FunctionDef):
         if self.classe_actuelle:
-            return
+            type_methode = 'methode'
+            if 'staticmethod' in decorateurs:
+                type_methode = 'staticmethod'
+            elif 'classmethod' in decorateurs:
+                type_methode = 'classmethod'
+            elif 'property' in decorateurs:
+                type_methode = 'property'
             
-        nom_fonction = node.name
-        clef = f"{self.chemin}::{nom_fonction}"
+            clef = f"{self.chemin}::{self.classe_actuelle}.{nom}"
+            self.entites[clef] = CodeEntity(
+                nom=nom,
+                type=type_methode,
+                ligne=node.lineno,
+                fichier=self.chemin,
+                classe_parent=self.classe_actuelle,
+                decorateurs=decorateurs
+            )
+        else:
+            clef = f"{self.chemin}::{nom}"
+            self.entites[clef] = CodeEntity(
+                nom=nom,
+                type='fonction',
+                ligne=node.lineno,
+                fichier=self.chemin,
+                decorateurs=decorateurs
+            )
         
-        self.entites[clef] = CodeEntity(
-            nom=nom_fonction,
-            type='fonction',
-            ligne=node.lineno,
-            fichier=self.chemin,
-            decorateurs=[self._nom_decorateur(d) for d in node.decorator_list]
-        )
-    
+        self.generic_visit(node)
+
+    def visit_Call(self, node):
+        func = node.func
+        if isinstance(func, ast.Name):
+            self.appels.add(func.id)
+            if func.id and func.id[0].isupper():
+                self.instanciations.add(func.id)
+        elif isinstance(func, ast.Attribute):
+            self.appels.add(func.attr)
+            if isinstance(func.value, ast.Name):
+                self.references_attributs[func.value.id].add(func.attr)
+        self.generic_visit(node)
+        
+    def visit_AnnAssign(self, node):
+        """Pour x: MyClass = ..."""
+        self._extraire_types_annotation(node.annotation)
+        self.generic_visit(node)
+
+    def _extraire_types_annotation(self, node: Any):
+        if node is None:
+            return
+
+        if isinstance(node, ast.Name):
+            self.type_hints.add(node.id)
+        elif isinstance(node, ast.Attribute):
+            self.type_hints.add(node.attr)
+            if isinstance(node.value, ast.Name):
+                self.type_hints.add(node.value.id)
+        elif isinstance(node, ast.Subscript): # List[User]
+            self._extraire_types_annotation(node.value)
+            self._extraire_types_annotation(node.slice)
+        elif isinstance(node, (ast.Tuple, ast.List)):
+            for elt in node.elts:
+                self._extraire_types_annotation(elt)
+        elif isinstance(node, ast.Constant) and isinstance(node.value, str): # "User"
+            self.type_hints.add(node.value.strip("'\""))
+        elif isinstance(node, ast.BinOp): # User | None
+             self._extraire_types_annotation(node.left)
+             self._extraire_types_annotation(node.right)
+
     def _nom_decorateur(self, node) -> str:
         if isinstance(node, ast.Name):
             return node.id
@@ -111,35 +158,19 @@ class AnalyseurAvance(ast.NodeVisitor):
             return node.func.id
         return ""
     
-    def _collecter_utilisations(self):
-        for node in ast.walk(self.arbre):
-            if isinstance(node, ast.Call):
-                func = node.func
-                if isinstance(func, ast.Name):
-                    self.appels.add(func.id)
-                    if func.id[0].isupper():
-                        self.instanciations.add(func.id)
-                elif isinstance(func, ast.Attribute):
-                    self.appels.add(func.attr)
-                    if isinstance(func.value, ast.Name):
-                        self.references_attributs[func.value.id].add(func.attr)
-            
-            elif isinstance(node, ast.ClassDef):
-                for base in node.bases:
-                    if isinstance(base, ast.Name):
-                        self.references_attributs[base.id]
-    
     def _resoudre_heritages(self):
         pass
 
 
 class DetecteurLimbo:
     def __init__(self, entites: Dict[str, CodeEntity], appels: Set[str], 
-                 instanciations: Set[str], references_attributs: Dict[str, Set[str]]):
+                 instanciations: Set[str], references_attributs: Dict[str, Set[str]],
+                 type_hints: Set[str]):
         self.entites = entites
         self.appels = appels
         self.instanciations = instanciations
         self.references_attributs = references_attributs
+        self.type_hints = type_hints
         
         self.methodes_magiques = {
             '__init__', '__del__', '__repr__', '__str__', '__eq__', '__ne__',
@@ -149,12 +180,14 @@ class DetecteurLimbo:
             '__enter__', '__exit__', '__call__', '__len__', '__contains__',
             '__add__', '__sub__', '__mul__', '__truediv__', '__floordiv__',
             '__mod__', '__pow__', '__and__', '__or__', '__xor__',
+            '__await__', '__aiter__', '__anext__', '__aenter__', '__aexit__'
         }
         
         self.methodes_framework = {
             'save', 'delete', 'clean', 'full_clean', 'get_absolute_url',
             'Meta', 'DoesNotExist', 'MultipleObjectsReturned',
             'setup', 'teardown', 'setUp', 'tearDown',
+            'test'
         }
     
     def analyser(self) -> Tuple[List[CodeEntity], List[CodeEntity], List[CodeEntity]]:
@@ -176,20 +209,28 @@ class DetecteurLimbo:
         return morts, probablement_morts, utilises
     
     def _evaluer_entite(self, entite: CodeEntity) -> str:
+        if entite.fichier.startswith('test_') or '/test_' in entite.fichier or '/tests/' in entite.fichier:
+            if entite.nom.startswith('test_'):
+                return "utilise"
+
         if entite.nom in self.methodes_magiques:
             return "utilise"
         
         if entite.nom in self.methodes_framework:
             return "probable"
         
-        deco_special = ['app.route', 'router.get', 'task', 'property', 'pytest.fixture']
+        deco_special = ['app.route', 'router.get', 'task', 'property', 'pytest.fixture', 'fixture']
         if any(d in deco_special for d in entite.decorateurs):
             return "utilise"
         
-        if entite.nom in ['main', 'run', 'app', 'create_app', 'cli']:
+        if entite.nom in ['main', 'run', 'app', 'create_app', 'cli', 'application']:
             return "utilise"
         
         if entite.nom in self.appels:
+            return "utilise"
+        
+        if entite.type == 'classe' and entite.nom in self.type_hints:
+            entite.raison_utilisation = "Utilisé comme Type Hint"
             return "utilise"
         
         if entite.type == 'classe':
@@ -200,14 +241,24 @@ class DetecteurLimbo:
             return "mort"
         
         if entite.type in ['staticmethod', 'classmethod']:
+            if (entite.classe_parent in self.instanciations or 
+                entite.classe_parent in self.type_hints):
+                if not entite.nom.startswith('_'):
+                    return "probable"
             if entite.classe_parent in self.instanciations:
                 return "utilise"
             return "mort"
         
         if entite.type == 'methode':
-            if entite.classe_parent in self.instanciations:
+            if (entite.classe_parent in self.instanciations or 
+                entite.classe_parent in self.type_hints):
+                
                 if entite.nom in self.appels:
                     return "utilise"
+                
+                if not entite.nom.startswith('_'):
+                    return "probable"
+                    
                 return "mort"
             return "mort"
         
@@ -220,7 +271,7 @@ class DetecteurLimbo:
 def analyser_fichier_avance(chemin: str) -> Tuple[List[CodeEntity], List[CodeEntity], List[CodeEntity]]:
     contenu = Path(chemin).read_text(encoding='utf-8')
     analyseur = AnalyseurAvance(chemin, contenu)
-    entites, appels, instanciations, references = analyseur.analyser()
+    entites, appels, instanciations, references, type_hints = analyseur.analyser()
     
-    detecteur = DetecteurLimbo(entites, appels, instanciations, references)
+    detecteur = DetecteurLimbo(entites, appels, instanciations, references, type_hints)
     return detecteur.analyser()
