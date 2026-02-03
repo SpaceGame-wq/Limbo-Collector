@@ -24,6 +24,7 @@ class AnalyseurAvance(ast.NodeVisitor):
         self.exports_all: Set[str] = set() # Pour __all__
         self.lignes_ignorees: Set[int] = set() # Pour # limbo: ignore
         self.classe_actuelle: Optional[str] = None
+        self.dans_fonction = False
         
         self._scanner_commentaires()
 
@@ -48,6 +49,16 @@ class AnalyseurAvance(ast.NodeVisitor):
                             self.exports_all.add(elt.value)
                         elif isinstance(elt, ast.Str): # Pour compatibilité Python < 3.8
                             self.exports_all.add(elt.s)
+
+            # Détection des variables globales
+            # Si on n'est ni dans une classe, ni dans une fonction
+            if not self.classe_actuelle and not self.dans_fonction:
+                if isinstance(target, ast.Name):
+                    self._enregistrer_variable_globale(target)
+                elif isinstance(target, (ast.Tuple, ast.List)):
+                    for elt in target.elts:
+                        if isinstance(elt, ast.Name):
+                            self._enregistrer_variable_globale(elt)
         self.generic_visit(node)
         
     def visit_Import(self, node):
@@ -90,10 +101,31 @@ class AnalyseurAvance(ast.NodeVisitor):
         self.classe_actuelle = ancien_contexte
 
     def visit_FunctionDef(self, node):
+        ancienne_valeur = self.dans_fonction
+        self.dans_fonction = True
         self._traiter_fonction_ou_methode(node)
+        self.dans_fonction = ancienne_valeur
         
     def visit_AsyncFunctionDef(self, node):
-        self._traiter_fonction_ou_methode(node)
+        self.visit_FunctionDef(node)
+    
+    def _enregistrer_variable_globale(self, node_name: ast.Name):
+        nom = node_name.id
+        # On ignore les variables privées par convention (_nom)
+        if nom.startswith('_') and not nom.startswith('__'):
+            return
+        # On ignore les constantes spéciales
+        if nom in ('__version__', '__author__', '__license__'):
+            return
+
+        clef = f"{self.chemin}::{nom}"
+        self.entites[clef] = CodeEntity(
+            nom=nom,
+            type='variable_globale',
+            ligne=node_name.lineno,
+            fichier=self.chemin,
+            est_ignoree=(node_name.lineno in self.lignes_ignorees)
+        )
 
     def _traiter_fonction_ou_methode(self, node):
         # Récupération des types (retour et arguments)
@@ -304,6 +336,16 @@ class DetecteurLimbo:
         
         if entite.type == 'fonction':
             return "mort" if entite.nom not in self.appels else "utilise"
+
+        if entite.type == 'variable_globale':
+            if entite.nom in self.type_hints:
+                return "utilise"
+            if entite.nom in self.appels:
+                return "utilise"
+            if entite.nom in self.references_attributs:
+                return "utilise"
+            
+            return "mort"
         
         return "probable"
 

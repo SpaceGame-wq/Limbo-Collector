@@ -95,10 +95,12 @@ def valider_chemin(chemin: str) -> Optional[Path]:
 
 def formater_entite(entite: CodeEntity) -> str:
     """Formate une entité code pour l'affichage."""
-    if entite.classe_parent:
-        return f"{entite.classe_parent}.{entite.nom}()"
+    if entite.type == "variable_globale":
+        return entite.nom
     if entite.type == "classe":
         return f"class {entite.nom}"
+    if entite.classe_parent:
+        return f"{entite.classe_parent}.{entite.nom}()"
     return f"{entite.nom}()"
 
 
@@ -145,6 +147,8 @@ def formater_entite_morte(entite: CodeEntity) -> str:
     symbole = "  "
     if entite.type == "classe":
         symbole = "📦 "
+    elif entite.type == "variable_globale":
+        symbole = "📌 "
     elif entite.type in ("staticmethod", "classmethod"):
         symbole = "🔹 "
     elif entite.type == "fonction":
@@ -308,9 +312,15 @@ def analyser_fichier(chemin: Path, args, config: LimboConfig) -> int:
 
 
 def formater_entite_projet(item: Tuple[str, CodeEntity]) -> str:
-    """Formate une entité de projet pour l'affichage."""
+    """Formate une entité de projet pour l'affichage (Dossier)."""
     chemin, entite = item
-    symbole = "📦 " if entite.type == "classe" else "🔸 "
+    symbole = "🔸 "
+    
+    if entite.type == "classe":
+        symbole = "📦 "
+    elif entite.type == "variable_globale":
+        symbole = "📌 "
+        
     return f"{symbole}{chemin}:{entite.ligne} → {formater_entite(entite)}"
 
 
@@ -376,6 +386,7 @@ def afficher_resultats_projet(
     afficher_rapport_sante(resultat)
 
     print("-" * 60)
+    print("")
 
     return total_certains
 

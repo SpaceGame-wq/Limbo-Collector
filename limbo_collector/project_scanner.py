@@ -37,6 +37,7 @@ class ResultatProjet:
             'fonction_morte': 5,
             'unreachable': 4,
             'import_mort': 1,
+            'variable_globale_morte': 2,
             'variable_morte': 1,
             'param_mort': 1
         }
@@ -44,6 +45,7 @@ class ResultatProjet:
         penalite = (
             len([e for _, e in self.code_mort if e.type == 'classe']) * poids['classe_morte'] +
             len([e for _, e in self.code_mort if e.type != 'classe']) * poids['fonction_morte'] +
+            len([e for _, e in self.code_mort if e.type == 'variable_globale']) * poids['variable_globale_morte'] +
             sum(len(v) for v in self.imports_morts_par_fichier.values()) * poids['import_mort'] +
             sum(len(v) for v in self.variables_mortes_par_fichier.values()) * poids['variable_morte'] +
             self.stats_unreachable * poids['unreachable'] +

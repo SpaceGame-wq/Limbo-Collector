@@ -1,6 +1,8 @@
 from utils import calculer_total, formater_nom
 from models import Utilisateur
 
+x = 3
+
 def main():
     # On utilise calculer_total
     prix = calculer_total([10, 20, 30])
