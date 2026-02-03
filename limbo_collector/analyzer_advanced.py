@@ -21,13 +21,35 @@ class AnalyseurAvance(ast.NodeVisitor):
         self.imports: Dict[str, str] = {}
         self.type_hints: Set[str] = set()
         
+        self.exports_all: Set[str] = set() # Pour __all__
+        self.lignes_ignorees: Set[int] = set() # Pour # limbo: ignore
         self.classe_actuelle: Optional[str] = None
         
+        self._scanner_commentaires()
+
+    def _scanner_commentaires(self):
+        """Repère les lignes contenant le tag d'ignorance."""
+        for i, ligne in enumerate(self.contenu.splitlines(), 1):
+            if "# limbo: ignore" in ligne or "# no-limbo" in ligne:
+                self.lignes_ignorees.add(i)
+
     def analyser(self):
         self.visit(self.arbre)
         self._resoudre_heritages()
-        return self.entites, self.appels, self.instanciations, self.references_attributs, self.type_hints
+        return self.entites, self.appels, self.instanciations, self.references_attributs, self.type_hints, self.exports_all
 
+    def visit_Assign(self, node):
+        for target in node.targets:
+            # On cherche __all__ = [...]
+            if isinstance(target, ast.Name) and target.id == "__all__":
+                if isinstance(node.value, (ast.List, ast.Tuple)):
+                    for elt in node.value.elts:
+                        if isinstance(elt, ast.Constant) and isinstance(elt.value, str):
+                            self.exports_all.add(elt.value)
+                        elif isinstance(elt, ast.Str): # Pour compatibilité Python < 3.8
+                            self.exports_all.add(elt.s)
+        self.generic_visit(node)
+        
     def visit_Import(self, node):
         for alias in node.names:
             nom = alias.asname or alias.name
@@ -49,13 +71,17 @@ class AnalyseurAvance(ast.NodeVisitor):
                 self.heritages[nom_classe] = base.id
                 self.type_hints.add(base.id)
         
+        ignoree = (node.lineno in self.lignes_ignorees or 
+                   (node.lineno - 1) in self.lignes_ignorees)
+
         clef = f"{self.chemin}::{nom_classe}"
         self.entites[clef] = CodeEntity(
             nom=nom_classe,
             type='classe',
             ligne=node.lineno,
             fichier=self.chemin,
-            decorateurs=[self._nom_decorateur(d) for d in node.decorator_list]
+            decorateurs=[self._nom_decorateur(d) for d in node.decorator_list],
+            est_ignoree=ignoree
         )
         
         ancien_contexte = self.classe_actuelle
@@ -77,6 +103,9 @@ class AnalyseurAvance(ast.NodeVisitor):
             if arg.annotation:
                 self._extraire_types_annotation(arg.annotation)
         
+        ignoree = (node.lineno in self.lignes_ignorees or 
+                   (node.lineno - 1) in self.lignes_ignorees)
+        
         nom = node.name
         decorateurs = [self._nom_decorateur(d) for d in node.decorator_list]
         
@@ -96,7 +125,8 @@ class AnalyseurAvance(ast.NodeVisitor):
                 ligne=node.lineno,
                 fichier=self.chemin,
                 classe_parent=self.classe_actuelle,
-                decorateurs=decorateurs
+                decorateurs=decorateurs,
+                est_ignoree=ignoree
             )
         else:
             clef = f"{self.chemin}::{nom}"
@@ -105,9 +135,9 @@ class AnalyseurAvance(ast.NodeVisitor):
                 type='fonction',
                 ligne=node.lineno,
                 fichier=self.chemin,
-                decorateurs=decorateurs
+                decorateurs=decorateurs,
+                est_ignoree=ignoree
             )
-        
         self.generic_visit(node)
 
     def visit_Call(self, node):
@@ -165,12 +195,13 @@ class AnalyseurAvance(ast.NodeVisitor):
 class DetecteurLimbo:
     def __init__(self, entites: Dict[str, CodeEntity], appels: Set[str], 
                  instanciations: Set[str], references_attributs: Dict[str, Set[str]],
-                 type_hints: Set[str]):
+                 type_hints: Set[str], exports_all: Set[str]):
         self.entites = entites
         self.appels = appels
         self.instanciations = instanciations
         self.references_attributs = references_attributs
         self.type_hints = type_hints
+        self.exports_all = exports_all
         
         self.methodes_magiques = {
             '__init__', '__del__', '__repr__', '__str__', '__eq__', '__ne__',
@@ -207,8 +238,17 @@ class DetecteurLimbo:
                 probablement_morts.append(entite)
         
         return morts, probablement_morts, utilises
-    
+
     def _evaluer_entite(self, entite: CodeEntity) -> str:
+            
+        if entite.est_ignoree:
+            entite.raison_utilisation = "Ignoré par commentaire"
+            return "utilise"
+
+        if entite.nom in self.exports_all:
+            entite.raison_utilisation = "Exporté via __all__"
+            return "utilise"
+        
         if entite.fichier.startswith('test_') or '/test_' in entite.fichier or '/tests/' in entite.fichier:
             if entite.nom.startswith('test_'):
                 return "utilise"
@@ -271,7 +311,7 @@ class DetecteurLimbo:
 def analyser_fichier_avance(chemin: str) -> Tuple[List[CodeEntity], List[CodeEntity], List[CodeEntity]]:
     contenu = Path(chemin).read_text(encoding='utf-8')
     analyseur = AnalyseurAvance(chemin, contenu)
-    entites, appels, instanciations, references, type_hints = analyseur.analyser()
+    entites, appels, instanciations, references, type_hints, exports_all = analyseur.analyser()
     
-    detecteur = DetecteurLimbo(entites, appels, instanciations, references, type_hints)
+    detecteur = DetecteurLimbo(entites, appels, instanciations, references, type_hints, exports_all)
     return detecteur.analyser()

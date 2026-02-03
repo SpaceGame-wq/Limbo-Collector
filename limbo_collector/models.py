@@ -12,6 +12,7 @@ class CodeEntity:
     decorateurs: List[str] = field(default_factory=list)
     est_utilisee: bool = False
     raison_utilisation: str = ""
+    est_ignoree: bool = False
 
 @dataclass
 class ImportInutile:

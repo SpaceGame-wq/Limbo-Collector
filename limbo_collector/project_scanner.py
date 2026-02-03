@@ -18,6 +18,7 @@ class FichierAnalyse:
     instanciations: Set[str]
     references: Dict[str, Set[str]]
     type_hints: Set[str]
+    exports_all: Set[str]
     exports: Set[str]  # Ce que ce fichier exporte (pour d'autres fichiers)
     imports_externes: Dict[str, str]  # nom -> origine (fichier ou module)
 
@@ -138,7 +139,7 @@ class ScannerProjet:
                 continue
             fichiers.append(chemin)
         return fichiers
-        
+
     def _analyser_fichier(self, chemin_absolu: Path):
         """Analyse un fichier individuel."""
         rel = str(chemin_absolu.relative_to(self.racine))
@@ -146,8 +147,8 @@ class ScannerProjet:
         
         # Analyse AST
         analyseur = AnalyseurAvance(rel, contenu)
-        entites, appels, instanciations, references, type_hints = analyseur.analyser()
-        
+        entites, appels, instanciations, references, type_hints, exports_all = analyseur.analyser()
+
         # Extrait les exports (ce qui est public)
         exports = set()
         for clef, entite in entites.items():
@@ -164,6 +165,7 @@ class ScannerProjet:
             instanciations=instanciations,
             references=references,
             type_hints=type_hints,
+            exports_all=exports_all,
             exports=exports,
             imports_externes=imports_externes
         )
@@ -238,7 +240,8 @@ def analyser_projet_complet(chemin: str, config=None) -> ResultatProjet:
             fichier.appels,
             fichier.instanciations,
             fichier.references,
-            fichier.type_hints
+            fichier.type_hints,
+            fichier.exports_all
         )
         
         morts, suspects, utilises = detecteur.analyser()
