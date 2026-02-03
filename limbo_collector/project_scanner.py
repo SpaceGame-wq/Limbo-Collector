@@ -1,12 +1,12 @@
 import ast
 from pathlib import Path
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import List, Set, Dict, Optional, Tuple, DefaultDict
 from collections import defaultdict
-
-from .analyzer_advanced import AnalyseurAvance, DetecteurLimbo, CodeEntity
-from .imports import ImportInutile
-from .variables import VariableInutilisee, trouver_variables_inutilisees
+from .models import CodeEntity, ImportInutile, VariableInutilisee
+from .analyzer_advanced import AnalyseurAvance, DetecteurLimbo
+from .imports import analyser_imports_fichier
+from .variables import trouver_variables_inutilisees
 
 
 @dataclass
@@ -252,7 +252,6 @@ def analyser_projet_complet(chemin: str, config=None) -> ResultatProjet:
             
         # Imports inutilisés (analyse locale seulement)
         try:
-            from .imports import analyser_imports_fichier
             chemin_absolu = Path(chemin) / chemin_fichier
             imports_morts[chemin_fichier] = analyser_imports_fichier(str(chemin_absolu))
         except Exception:

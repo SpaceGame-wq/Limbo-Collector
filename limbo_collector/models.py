@@ -1,0 +1,48 @@
+from dataclasses import dataclass, field
+from typing import List, Optional
+
+@dataclass
+class CodeEntity:
+    """Représente une fonction, une méthode ou une classe."""
+    nom: str
+    type: str  # 'fonction', 'classe', 'methode', 'staticmethod', etc.
+    ligne: int
+    fichier: str
+    classe_parent: Optional[str] = None
+    decorateurs: List[str] = field(default_factory=list)
+    est_utilisee: bool = False
+    raison_utilisation: str = ""
+
+@dataclass
+class ImportInutile:
+    """Représente un import détecté comme inutile."""
+    nom: str
+    ligne: int
+    type: str  # 'import' ou 'from'
+    module_source: str = ""
+
+@dataclass
+class VariableInutilisee:
+    """Représente une variable locale assignée mais non lue."""
+    nom: str
+    ligne: int
+    fonction_parent: str
+    type_assignation: str
+
+@dataclass
+class CodeUnreachable:
+    """Représente du code inaccessible (après return, break, etc.)."""
+    ligne_debut: int
+    ligne_fin: int
+    type: str
+    description: str
+
+@dataclass
+class ParametreInutilise:
+    """Représente un paramètre de fonction non utilisé."""
+    nom: str
+    ligne: int
+    fonction: str
+    position: int
+    est_kwargs: bool
+    est_args: bool

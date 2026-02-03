@@ -1,21 +1,8 @@
 import ast
 from pathlib import Path
-from dataclasses import dataclass, field
 from typing import List, Set, Dict, Optional, Tuple
 from collections import defaultdict
-
-
-@dataclass
-class CodeEntity:
-    nom: str
-    type: str
-    ligne: int
-    fichier: str
-    classe_parent: Optional[str] = None
-    decorateurs: List[str] = field(default_factory=list)
-    est_utilisee: bool = False
-    raison_utilisation: str = ""
-
+from .models import CodeEntity
 
 class AnalyseurAvance(ast.NodeVisitor):
     def __init__(self, chemin_fichier: str, contenu: str):

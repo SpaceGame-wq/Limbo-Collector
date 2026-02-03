@@ -1,16 +1,8 @@
 import ast
 from pathlib import Path
-from dataclasses import dataclass
 from typing import List, Set, Dict
 from collections import defaultdict
-
-
-@dataclass
-class ImportInutile:
-    nom: str
-    ligne: int
-    type: str  # 'import' ou 'from'
-    module_source: str = ""  # Pour 'from X import Y', c'est X
+from .models import ImportInutile
 
 
 class AnalyseurImports(ast.NodeVisitor):

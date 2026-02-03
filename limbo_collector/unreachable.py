@@ -1,18 +1,6 @@
-"""
-Détection de code unreachable (inaccessible).
-"""
-
 import ast
-from dataclasses import dataclass
 from typing import List, Optional
-
-
-@dataclass
-class CodeUnreachable:
-    ligne_debut: int
-    ligne_fin: int
-    type: str  # 'after_return', 'after_raise', 'after_break', 'after_continue', 'if_false', 'while_false'
-    description: str
+from .models import CodeUnreachable
 
 
 class DetecteurUnreachable(ast.NodeVisitor):

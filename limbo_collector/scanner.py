@@ -1,75 +1,16 @@
-import ast
 from pathlib import Path
-from dataclasses import dataclass
-from typing import List, Set, Tuple
-from .imports import analyser_imports_fichier, ImportInutile
-from .variables import trouver_variables_inutilisees, VariableInutilisee
-from .analyzer_advanced import analyser_fichier_avance, CodeEntity
-from .unreachable import trouver_code_unreachable, CodeUnreachable
-from .parameters import trouver_parametres_inutilises, ParametreInutilise
-
-
-@dataclass
-class ObjetCode:
-    nom: str
-    type: str  # 'fonction' ou 'classe'
-    ligne: int
-    fichier: str
-
-
-class ScannerLimbo(ast.NodeVisitor):
-    def __init__(self, chemin_fichier: str):
-        self.chemin = chemin_fichier
-        self.definitions: List[ObjetCode] = []
-        self.appels: Set[str] = set()
-        
-    def analyser(self, contenu: str = None):
-        if contenu is None:
-            contenu = Path(self.chemin).read_text(encoding='utf-8')
-            
-        arbre = ast.parse(contenu)
-        
-        # Ajoute les références parent à chaque nœud
-        for node in ast.walk(arbre):
-            for child in ast.iter_child_nodes(node):
-                child.parent = node
-        
-        self.visit(arbre)
-        return self.definitions, self.appels
-    
-    def visit_FunctionDef(self, node):
-        if isinstance(getattr(node, 'parent', None), ast.ClassDef):
-            return self.generic_visit(node)
-            
-        if not (node.name.startswith('__') and node.name.endswith('__')):
-            self.definitions.append(ObjetCode(
-                nom=node.name,
-                type='fonction',
-                ligne=node.lineno,
-                fichier=self.chemin
-            ))
-        self.generic_visit(node)
-    
-    def visit_ClassDef(self, node):
-        """Quand on croise : class MaClasse:"""
-        self.definitions.append(ObjetCode(
-            nom=node.name,
-            type='classe',
-            ligne=node.lineno,
-            fichier=self.chemin
-        ))
-        self.generic_visit(node)
-    
-    def visit_Call(self, node):
-        """Quand on croise : une_fonction()"""
-        if isinstance(node.func, ast.Name):
-            self.appels.add(node.func.id)
-        self.generic_visit(node)
+from typing import List, Tuple
+from .models import CodeEntity, ImportInutile, VariableInutilisee, CodeUnreachable, ParametreInutilise
+from .analyzer_advanced import analyser_fichier_avance
+from .imports import analyser_imports_fichier
+from .variables import trouver_variables_inutilisees
+from .unreachable import trouver_code_unreachable
+from .parameters import trouver_parametres_inutilises
 
 
 def trouver_code_mort(chemin_fichier: str) -> Tuple[List[CodeEntity], List[CodeEntity], List[CodeEntity]]:
     """
-    Analyse complète d'un fichier.
+    Analyse complète d'un fichier pour trouver fonctions et classes inutilisées.
     Retourne: (morts, probablement_morts, utilises)
     """
     return analyser_fichier_avance(chemin_fichier)

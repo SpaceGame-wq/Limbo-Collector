@@ -3,8 +3,8 @@ import json
 import sys
 from pathlib import Path
 from typing import List, Tuple, Optional
-
-from .scanner import trouver_code_mort, trouver_imports_morts, trouver_variables_mortes, trouver_unreachable, trouver_params_morts, CodeEntity, ImportInutile, VariableInutilisee, CodeUnreachable, ParametreInutilise
+from .models import CodeEntity, ImportInutile, VariableInutilisee, CodeUnreachable, ParametreInutilise
+from .scanner import trouver_code_mort, trouver_imports_morts, trouver_variables_mortes, trouver_unreachable, trouver_params_morts
 from .project_scanner import analyser_projet_complet, ResultatProjet
 from .config import LimboConfig
 

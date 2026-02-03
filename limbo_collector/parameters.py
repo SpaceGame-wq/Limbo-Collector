@@ -1,20 +1,6 @@
-"""
-Détection des paramètres de fonctions inutilisés.
-"""
-
 import ast
-from dataclasses import dataclass
-from typing import List, Set, Optional
-
-
-@dataclass
-class ParametreInutilise:
-    nom: str
-    ligne: int
-    fonction: str
-    position: int  # 0 = premier paramètre
-    est_kwargs: bool  # **kwargs
-    est_args: bool     # *args
+from typing import List, Set
+from .models import ParametreInutilise
 
 
 class DetecteurParametres(ast.NodeVisitor):

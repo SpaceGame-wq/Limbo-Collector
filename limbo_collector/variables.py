@@ -1,15 +1,6 @@
 import ast
-from dataclasses import dataclass
-from typing import List, Set, Dict, Tuple
-from collections import defaultdict
-
-
-@dataclass
-class VariableInutilisee:
-    nom: str
-    ligne: int
-    fonction_parent: str
-    type_assignation: str  # 'simple', 'unpack', 'loop'
+from typing import List, Dict
+from .models import VariableInutilisee
 
 
 class AnalyseurVariables(ast.NodeVisitor):
