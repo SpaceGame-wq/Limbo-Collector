@@ -3,6 +3,7 @@ from pathlib import Path
 from typing import List, Set, Dict, Optional, Tuple, Any
 from collections import defaultdict
 from .models import CodeEntity
+from .frameworks import FRAMEWORK_RULES
 
 class AnalyseurAvance(ast.NodeVisitor):
     def __init__(self, chemin_fichier: str, contenu: str):
@@ -299,13 +300,6 @@ class DetecteurLimbo:
             '__mod__', '__pow__', '__and__', '__or__', '__xor__',
             '__await__', '__aiter__', '__anext__', '__aenter__', '__aexit__'
         }
-        
-        self.methodes_framework = {
-            'save', 'delete', 'clean', 'full_clean', 'get_absolute_url',
-            'Meta', 'DoesNotExist', 'MultipleObjectsReturned',
-            'setup', 'teardown', 'setUp', 'tearDown',
-            'test'
-        }
     
     def analyser(self, recursive: bool = False) -> Tuple[List[CodeEntity], List[CodeEntity], List[CodeEntity]]:
         if not recursive:
@@ -364,103 +358,106 @@ class DetecteurLimbo:
         
         return morts, [], utilises
 
-    def _est_racine(self, entite: CodeEntity) -> bool:
-        """Détermine si une entité est un point d'entrée du programme."""
-        if entite.est_ignoree: return True
-        if entite.nom in self.exports_all: return True
-        if entite.nom in self.methodes_magiques: return True
+
+    def _est_une_racine_framework(self, entite: CodeEntity) -> bool:
+        """Vérifie si l'entité est un point d'entrée selon les frameworks connus."""
         
-        # Décorateurs de frameworks (API, Tâches, etc.)
-        deco_root = ['app.route', 'router.get', 'task', 'pytest.fixture', 'fixture']
-        if any(d in deco_root for d in entite.decorateurs): return True
+        # 1. Vérification par décorateurs (FastAPI, Flask, Celery, Pytest)
+        tous_les_decos_racines = (
+            FRAMEWORK_RULES["fastapi_flask"]["decorateurs_racines"] | 
+            FRAMEWORK_RULES["pytest"]["decorateurs_racines"] |
+            FRAMEWORK_RULES["django"]["decorateurs_racines"]
+        )
         
-        # Noms standards d'entrée
-        if entite.nom in ['main', 'run', 'app', 'create_app', 'cli', 'application']:
+        if any(deco in tous_les_decos_racines for deco in entite.decorateurs):
+            entite.raison_utilisation = "Point d'entrée Framework (décorateur)"
             return True
-            
-        # Tests
-        if (entite.fichier.startswith('test_') or '/test_' in entite.fichier) and entite.nom.startswith('test_'):
+
+        # 2. Cas spécifique Pytest (fichiers de test ou fonctions test_*)
+        if entite.nom.startswith("test_") or entite.nom.startswith("pytest_"):
+             if "test" in entite.fichier or "conftest.py" in entite.fichier:
+                return True
+
+        # 3. Cas spécifique Django (Classes Meta, méthodes de commande management)
+        if entite.type == 'classe' and entite.nom in FRAMEWORK_RULES["django"]["classes_vivantes"]:
             return True
-            
-        return False       
+        
+        if entite.type in ['methode', 'fonction'] and entite.nom in FRAMEWORK_RULES["django"]["methodes_vivantes"]:
+            # On pourrait vérifier ici si la classe parente hérite de Model/View pour être plus précis
+            return True
+
+        # 4. Cas Pydantic / Tortoise ORM / etc.
+        if entite.nom in FRAMEWORK_RULES["pydantic"]["classes_vivantes"]:
+            return True
+
+        return False
 
     def _evaluer_entite(self, entite: CodeEntity) -> str:
-            
+        """Évalue si une entité est morte, suspecte ou vivante."""
+        
+        # 0. Ignorance explicite
         if entite.est_ignoree:
             entite.raison_utilisation = "Ignoré par commentaire"
             return "utilise"
 
+        # 1. Vérification des racines standards et frameworks
+        if self._est_racine_standard(entite) or self._est_une_racine_framework(entite):
+            return "utilise"
+
+        # 2. Utilisation par exports
         if entite.nom in self.exports_all:
             entite.raison_utilisation = "Exporté via __all__"
             return "utilise"
         
-        if entite.fichier.startswith('test_') or '/test_' in entite.fichier or '/tests/' in entite.fichier:
-            if entite.nom.startswith('test_'):
-                return "utilise"
-
-        if entite.nom in self.methodes_magiques:
-            return "utilise"
-        
-        if entite.nom in self.methodes_framework:
-            return "probable"
-        
-        deco_special = ['app.route', 'router.get', 'task', 'property', 'pytest.fixture', 'fixture']
-        if any(d in deco_special for d in entite.decorateurs):
-            return "utilise"
-        
-        if entite.nom in ['main', 'run', 'app', 'create_app', 'cli', 'application']:
-            return "utilise"
-        
+        # 3. Utilisation par appel direct (le plus fréquent)
         if entite.nom in self.appels:
+            entite.raison_utilisation = "Appelé directement"
             return "utilise"
         
+        # 4. Utilisation comme Type Hint
         if entite.type == 'classe' and entite.nom in self.type_hints:
             entite.raison_utilisation = "Utilisé comme Type Hint"
             return "utilise"
-        
+
+        # 5. Cas des classes instanciées
         if entite.type == 'classe':
             if entite.nom in self.instanciations:
+                entite.raison_utilisation = "Instanciée"
                 return "utilise"
+            # Si on accède à un attribut de la classe sans l'instancier
             if entite.nom in self.references_attributs:
+                entite.raison_utilisation = "Référence statique"
                 return "probable"
             return "mort"
-        
-        if entite.type in ['staticmethod', 'classmethod']:
-            if (entite.classe_parent in self.instanciations or 
-                entite.classe_parent in self.type_hints):
-                if not entite.nom.startswith('_'):
-                    return "probable"
-            if entite.classe_parent in self.instanciations:
-                return "utilise"
-            return "mort"
-        
-        if entite.type == 'methode':
-            if (entite.classe_parent in self.instanciations or 
-                entite.classe_parent in self.type_hints):
-                
-                if entite.nom in self.appels:
-                    return "utilise"
-                
-                if not entite.nom.startswith('_'):
-                    return "probable"
-                    
-                return "mort"
-            return "mort"
-        
-        if entite.type == 'fonction':
-            return "mort" if entite.nom not in self.appels else "utilise"
 
-        if entite.type == 'variable_globale':
-            if entite.nom in self.type_hints:
-                return "utilise"
-            if entite.nom in self.appels:
-                return "utilise"
-            if entite.nom in self.references_attributs:
-                return "utilise"
-            
+        # 6. Cas des méthodes (plus complexe)
+        if entite.type in ['methode', 'staticmethod', 'classmethod']:
+            # Si la classe parente est vivante, la méthode peut être appelée dynamiquement
+            if not entite.nom.startswith('_'):
+                # Si c'est une méthode publique d'une classe utilisée, on est prudent
+                return "probable"
             return "mort"
+
+        # 7. Variables globales
+        if entite.type == 'variable_globale':
+            if entite.nom in self.references_attributs or entite.nom in self.appels:
+                return "utilise"
+            return "mort"
+
+        return "mort"
+
+    def _est_racine_standard(self, entite: CodeEntity) -> bool:
+        """Points d'entrée Python standards."""
+        if entite.nom in self.methodes_magiques:
+            entite.raison_utilisation = "Méthode magique Python"
+            return True
         
-        return "probable"
+        noms_entrees = {'main', 'run', 'app', 'create_app', 'cli', 'application', 'wsgi_app', 'asgi_app'}
+        if entite.nom in noms_entrees:
+            entite.raison_utilisation = "Point d'entrée standard"
+            return True
+            
+        return False
 
 
 def analyser_fichier_avance(chemin: str, deep: bool = False) -> Tuple[List[CodeEntity], List[CodeEntity], List[CodeEntity]]:
