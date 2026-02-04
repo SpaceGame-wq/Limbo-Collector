@@ -1,0 +1,448 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Rapport d'Analyse Limbo Collector - {{ projet_chemin }}</title>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <style>
+        :root {
+            --bg-dark: #0d1117;
+            --bg-medium: #161b22;
+            --bg-light: #21262d;
+            --border-color: #30363d;
+            --text-primary: #e6edf3; /* Blanc cassé */
+            --text-secondary: #8b949e; /* Gris */
+            --accent-blue: #388bfd;
+            --accent-green: #3fb950;
+            --accent-yellow: #d29922;
+            --accent-red: #f85149;
+            --font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif, "Apple Color Emoji", "Segoe UI Emoji";
+            --radius: 6px;
+        }
+
+        @keyframes fadeIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
+        body {
+            font-family: var(--font-family);
+            background-color: var(--bg-dark);
+            color: var(--text-primary);
+            margin: 0;
+            padding: 2rem 3rem;
+            font-size: 16px;
+            line-height: 1.6;
+        }
+        .container { max-width: 1400px; margin: 0 auto; }
+        .header { text-align: center; margin-bottom: 3rem; animation: fadeIn 0.5s ease-out; }
+        .header h1 { font-size: 2.8rem; font-weight: 700; margin-bottom: 0.5rem; }
+        .header .subtitle { color: var(--text-secondary); }
+        .header strong { color: var(--text-primary); font-weight: 600; }
+        
+        .grid-layout { display: grid; gap: 1.5rem; }
+        .main-grid { grid-template-columns: 350px 1fr; }
+        .stats-grid { grid-template-columns: repeat(3, 1fr); }
+        
+        .card {
+            background-color: var(--bg-medium);
+            border: 1px solid var(--border-color);
+            border-radius: var(--radius);
+            padding: 1.5rem;
+            animation: fadeIn 0.5s ease-out forwards;
+            opacity: 0;
+        }
+        .card:nth-child(2) { animation-delay: 0.1s; }
+        .card:nth-child(3) { animation-delay: 0.2s; }
+        .card:nth-child(4) { animation-delay: 0.3s; }
+
+        .score-card { text-align: center; padding: 2rem; }
+        .score-circle-container { position: relative; width: 200px; height: 200px; margin: 1.5rem auto; }
+        .score-circle-bg { fill: none; stroke: var(--bg-light); stroke-width: 15; }
+        .score-circle-progress {
+            fill: none;
+            stroke: var(--accent-green);
+            stroke-width: 15;
+            stroke-linecap: round;
+            transform: rotate(-90deg);
+            transform-origin: 50% 50%;
+        }
+        .score-text {
+            position: absolute; top: 50%; left: 50%;
+            transform: translate(-50%, -50%);
+            font-size: 3.5rem;
+            font-weight: 700;
+        }
+        .score-appreciation { font-size: 1.1rem; color: var(--text-secondary); max-width: 90%; margin: 0 auto; }
+
+        .stat-card { text-align: center; }
+        .stat-card h3 { margin: 0 0 0.5rem 0; color: var(--text-secondary); font-size: 1rem; font-weight: 500; text-transform: uppercase; }
+        .stat-card .value { font-size: 2.8rem; font-weight: 700; line-height: 1.2; }
+        
+        .section-title {
+            font-size: 1.5rem; font-weight: 600;
+            margin: 3rem 0 1.5rem 0;
+            padding-bottom: 0.5rem;
+            border-bottom: 1px solid var(--border-color);
+        }
+
+        .issue-list .issue, .duplication-group {
+            display: flex;
+            background-color: var(--bg-medium);
+            border: 1px solid var(--border-color);
+            border-radius: var(--radius);
+            margin-bottom: 1rem;
+            padding: 1rem 1.5rem;
+            transition: transform 0.2s ease, box-shadow 0.2s ease;
+            animation: fadeIn 0.5s ease-out forwards;
+        }
+        .issue:hover { transform: translateY(-3px); box-shadow: 0 5px 15px rgba(0,0,0,0.2); }
+        .issue-icon { font-size: 1.8rem; margin-right: 1.5rem; flex-shrink: 0; padding-top: 5px;}
+        .issue-content { flex-grow: 1; }
+        .issue-title { font-weight: 600; font-size: 1.1rem; margin: 0 0 0.25rem 0; }
+        .issue-title code {
+            background-color: var(--bg-light);
+            padding: 0.2em 0.4em;
+            border-radius: 4px;
+            font-size: 0.9em;
+            color: var(--accent-blue);
+        }
+        .issue-location a { color: var(--text-secondary); text-decoration: none; }
+        .issue-location a:hover { color: var(--accent-blue); text-decoration: underline; }
+
+        .issue-details {
+            font-size: 0.9em;
+            margin-top: 0.8rem;
+            padding-top: 0.8rem;
+            border-top: 1px solid var(--border-color);
+            color: var(--text-secondary);
+        }
+        .issue-details strong { color: var(--text-primary); }
+        
+        .chip {
+            display: inline-block;
+            padding: 0.2rem 0.6rem;
+            border-radius: 1rem;
+            font-size: 0.8rem;
+            font-weight: 600;
+            margin-right: 0.5rem;
+        }
+        .chip.critical { background-color: var(--accent-red); color: #fff; }
+        .chip.warning { background-color: var(--accent-yellow); color: #000; }
+        .chip.info { background-color: var(--accent-blue); color: #fff; }
+        .chip.suspect { background-color: #8b949e; color: var(--bg-dark); } /* Gris pour les suspects */
+        
+        /* Styles spécifiques aux doublons */
+        .duplication-group {
+            flex-direction: column;
+            padding: 1rem 0;
+            border: none;
+            background-color: var(--bg-dark);
+            border-bottom: 1px solid var(--border-color);
+        }
+        .duplication-group strong { color: var(--accent-blue); margin-bottom: 0.5rem; display: block; }
+        .duplication-item {
+            display: flex;
+            justify-content: space-between;
+            background-color: var(--bg-medium);
+            border-left: 3px solid var(--accent-blue);
+            padding: 0.5rem 1rem;
+            margin-bottom: 0.3rem;
+            border-radius: var(--radius);
+            font-family: monospace;
+            font-size: 0.9em;
+        }
+    </style>
+</head>
+<body>
+<div class="container">
+    <header class="header">
+        <h1>Limbo Collector</h1>
+        <p class="subtitle">Rapport de Santé du Code pour <strong>{{ projet_chemin }}</strong><br>Généré le {{ date_generation }}</p>
+    </header>
+
+    <div class="grid-layout main-grid">
+        <aside>
+            <div class="card score-card">
+                <div class="score-circle-container">
+                    <svg viewBox="0 0 200 200">
+                        <circle class="score-circle-bg" cx="100" cy="100" r="85"></circle>
+                        <circle class="score-circle-progress" cx="100" cy="100" r="85" style="stroke: {{ score_color }}; stroke-dasharray: {{ svg_circumference }}; stroke-dashoffset: {{ svg_circumference }}; animation: progress-bar 2s ease-out forwards;"></circle>
+                    </svg>
+                    <div class="score-text" style="color: {{ score_color }};">{{ score }}</div>
+                </div>
+                <h2 style="margin:0; font-size:1.5rem;">{{ appreciation_titre }}</h2>
+                <p class="score-appreciation">{{ appreciation_detail }}</p>
+            </div>
+            
+            <div class="card" style="margin-top: 1.5rem; height: 300px;">
+                <canvas id="issueDistributionChart"></canvas>
+            </div>
+        </aside>
+
+        <main>
+            <div class="grid-layout stats-grid">
+                <div class="card stat-card">
+                    <h3>Fichiers Analysés</h3>
+                    <div class="value">{{ stats.fichiers_analyses }}</div>
+                </div>
+                <div class="card stat-card">
+                    <h3>Lignes de Code</h3>
+                    <div class="value">{{ stats.total_lignes | numberformat }}</div>
+                </div>
+                <div class="card stat-card">
+                    <h3>Problèmes Sévères</h3>
+                    <div class="value" style="color: var(--accent-red);">{{ stats.problemes_critiques }}</div>
+                </div>
+            </div>
+            
+            <div class="card" style="margin-top: 1.5rem; height: 300px;">
+                <canvas id="topFilesChart"></canvas>
+            </div>
+        </main>
+    </div>
+
+    <section class="issue-list" id="issue-list-container">
+        {% set issue_delay = 0 %}
+
+        {% if details.code_mort %}
+        <h2 class="section-title">Code Mort (Certain) - ({{ details.code_mort|length }})</h2>
+        {% for item in details.code_mort %}
+        <div class="issue" data-type="mort" style="animation-delay: {{ issue_delay }}s;">
+            {% set issue_delay = issue_delay + 0.05 %}
+            <div class="issue-icon">
+                {% if item.entite.type == 'classe' %}📦
+                {% elif item.entite.type == 'fonction' %}🌀
+                {% else %}🔧
+                {% endif %}
+            </div>
+            <div class="issue-content">
+                <p class="issue-title">
+                    <span class="chip critical">{{ item.entite.type | capitalize }} Mort</span>
+                    <code>{{ item.entite.nom }}</code>
+                </p>
+                <p class="issue-location">
+                    <a href="vscode://file/{{ item.chemin | absolute_path }}:{{ item.entite.ligne }}" title="Ouvrir dans VS Code">
+                        {{ item.chemin }}:{{ item.entite.ligne }}
+                    </a>
+                </p>
+                <div class="issue-details">
+                    <strong>Impact:</strong> Alourdit la base de code, augmente la complexité. Raison: {{ item.entite.raison_utilisation or 'Aucun appel trouvé.' }}
+                    <br><strong>Suggestion:</strong> Vérifier si ce code est appelé dynamiquement. Si non, le supprimer.
+                </div>
+            </div>
+        </div>
+        {% endfor %}
+        {% endif %}
+        
+        {% if details.code_suspect %}
+        <h2 class="section-title">Code Suspect (Probablement Mort) - ({{ details.code_suspect|length }})</h2>
+        {% for item in details.code_suspect %}
+        <div class="issue" data-type="suspect" style="animation-delay: {{ issue_delay }}s;">
+            {% set issue_delay = issue_delay + 0.05 %}
+            <div class="issue-icon">❓</div>
+            <div class="issue-content">
+                <p class="issue-title">
+                    <span class="chip suspect">Code Suspect</span>
+                    <code>{{ item.entite.nom }}</code>
+                </p>
+                <p class="issue-location">
+                    <a href="vscode://file/{{ item.chemin | absolute_path }}:{{ item.entite.ligne }}" title="Ouvrir dans VS Code">
+                        {{ item.chemin }}:{{ item.entite.ligne }}
+                    </a>
+                </p>
+                <div class="issue-details">
+                    <strong>Impact:</strong> Potentielle dette technique. Raison: Méthode publique/Framework non appelé directement.
+                    <br><strong>Suggestion:</strong> Vérifier les appels dynamiques ou l'héritage. Si inutilisé, marquer avec <code># limbo: ignore</code> ou le supprimer.
+                </div>
+            </div>
+        </div>
+        {% endfor %}
+        {% endif %}
+
+        {% if details.imports_morts %}
+        <h2 class="section-title">Imports Inutilisés ({{ details.imports_morts|length }})</h2>
+        {% for item in details.imports_morts %}
+        <div class="issue" data-type="import" style="animation-delay: {{ issue_delay }}s;">
+            {% set issue_delay = issue_delay + 0.05 %}
+            <div class="issue-icon">🚚</div>
+            <div class="issue-content">
+                <p class="issue-title">
+                    <span class="chip warning">Import Inutilisé</span>
+                    <code>{{ item.nom }}</code>
+                </p>
+                <p class="issue-location">
+                    <a href="vscode://file/{{ item.chemin | absolute_path }}:{{ item.ligne }}" title="Ouvrir dans VS Code">
+                        {{ item.chemin }}:{{ item.ligne }}
+                    </a>
+                </p>
+                <div class="issue-details">
+                    <strong>Impact:</strong> Ralentit légèrement le démarrage de l'application.
+                    <br><strong>Suggestion:</strong> Supprimer la ligne d'import.
+                </div>
+            </div>
+        </div>
+        {% endfor %}
+        {% endif %}
+        
+        {% if details.variables_mortes %}
+        <h2 class="section-title">Variables Locales Inutilisées ({{ details.variables_mortes|length }})</h2>
+        {% for item in details.variables_mortes %}
+        <div class="issue" data-type="variable" style="animation-delay: {{ issue_delay }}s;">
+            {% set issue_delay = issue_delay + 0.05 %}
+            <div class="issue-icon">✏️</div>
+            <div class="issue-content">
+                <p class="issue-title">
+                    <span class="chip info">Variable Inutilisée</span>
+                    <code>{{ item.nom }}</code>
+                </p>
+                <p class="issue-location">
+                    <a href="vscode://file/{{ item.chemin | absolute_path }}:{{ item.ligne }}" title="Ouvrir dans VS Code">
+                        {{ item.chemin }}:{{ item.ligne }}
+                    </a>
+                    (dans <code>{{ item.fonction_parent }}()</code>)
+                </p>
+                <div class="issue-details">
+                    <strong>Impact:</strong> Mineur. Peut indiquer un oubli ou une erreur de logique.
+                    <br><strong>Suggestion:</strong> Supprimer l'assignation.
+                </div>
+            </div>
+        </div>
+        {% endfor %}
+        {% endif %}
+        
+        {% if details.doublons %}
+        <h2 class="section-title">Code Dupliqué ({{ details.doublons|length }} groupes)</h2>
+        {% for groupe in details.doublons %}
+        <details class="duplication-group" style="margin-bottom: 2rem;">
+            <summary style="background: var(--bg-light); border: 1px solid var(--border-color); border-radius: var(--radius);">
+                <span style="color: var(--accent-yellow);">⚠️ Groupe #{{ loop.index }}</span> : {{ groupe.entites|length }} entités avec structure identique.
+            </summary>
+            <div style="padding: 1rem 1.5rem;">
+                <strong>Signature Structurelle:</strong> <code>{{ groupe.signature[:80] }}...</code>
+                {% for chemin, entite in groupe.entites %}
+                <div class="duplication-item">
+                    <span>
+                        {% if entite.classe_parent %}{{ entite.classe_parent }}.{% endif %}{{ entite.nom }}()
+                    </span>
+                    <p class="issue-location">
+                        <a href="vscode://file/{{ chemin | absolute_path }}:{{ entite.ligne }}" title="Ouvrir dans VS Code">
+                            {{ chemin }}:{{ entite.ligne }}
+                        </a>
+                    </p>
+                </div>
+                {% endfor %}
+            </div>
+        </details>
+        {% endfor %}
+        {% endif %}
+    </section>
+
+</div>
+<script>
+    // --- JS UTILS ---
+    const chartData = {{ chart_data | tojson }};
+
+    const getCssVar = (name) => {
+        return getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+    };
+
+    const COLORS = {
+        textPrimary: getCssVar('--text-primary'),
+        textSecondary: getCssVar('--text-secondary'),
+        bgMedium: getCssVar('--bg-medium'),
+        borderColor: getCssVar('--border-color'),
+        accentRed: getCssVar('--accent-red'),
+        accentYellow: getCssVar('--accent-yellow'),
+        accentBlue: getCssVar('--accent-blue')
+    };
+    
+    // --- CHART CONFIGURATION ---
+
+    Chart.defaults.font.family = getCssVar('--font-family');
+    Chart.defaults.color = COLORS.textSecondary;
+
+    Chart.defaults.scales = {
+        color: COLORS.textSecondary,
+        grid: { color: COLORS.borderColor },
+        ticks: { color: COLORS.textSecondary } 
+    };
+
+    // Graphique 1: Distribution par Sévérité
+    new Chart(document.getElementById('issueDistributionChart'), {
+        type: 'doughnut',
+        data: {
+            labels: chartData.distribution.labels,
+            datasets: [{
+                data: chartData.distribution.data,
+                backgroundColor: [COLORS.accentRed, COLORS.accentYellow, COLORS.accentBlue, COLORS.accentGreen],
+                borderColor: COLORS.bgMedium,
+                borderWidth: 5,
+                hoverOffset: 10
+            }]
+        },
+        options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            plugins: {
+                legend: { 
+                    position: 'bottom', 
+                    labels: { 
+                        padding: 20,
+                        color: COLORS.textPrimary
+                    } 
+                },
+                title: { 
+                    display: true, 
+                    text: 'Répartition par Sévérité', 
+                    color: COLORS.textPrimary,
+                    font: { size: 16 } 
+                }
+            }
+        }
+    });
+
+    // Graphique 2: Fichiers avec le plus de problèmes
+    new Chart(document.getElementById('topFilesChart'), {
+        type: 'bar',
+        data: {
+            labels: chartData.top_files.labels.map(l => {
+                // Raccourcir le chemin si trop long (esthétique)
+                const parts = l.split('/');
+                return parts.slice(Math.max(parts.length - 3, 0)).join('/');
+            }),
+            datasets: [{
+                label: 'Problèmes',
+                data: chartData.top_files.data,
+                backgroundColor: COLORS.accentRed, 
+                borderColor: COLORS.accentRed,
+                borderWidth: 1.5,
+                borderRadius: 4
+            }]
+        },
+        options: {
+            indexAxis: 'y',
+            responsive: true,
+            maintainAspectRatio: false,
+            plugins: {
+                legend: { display: false },
+                title: { 
+                    display: true, 
+                    text: 'Fichiers avec le plus de problèmes', 
+                    color: COLORS.textPrimary,
+                    font: { size: 16 },
+                    padding: { bottom: 20 }
+                }
+            },
+            scales: {
+                x: { 
+                    ticks: { color: COLORS.textSecondary },
+                    grid: { color: COLORS.borderColor } 
+                },
+                y: { 
+                    ticks: { color: COLORS.textPrimary },
+                    grid: { display: false } 
+                }
+            }
+        }
+    });
+</script>
+</body>
+</html>

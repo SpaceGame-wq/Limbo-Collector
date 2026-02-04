@@ -9,6 +9,7 @@ from .project_scanner import analyser_projet_complet, ResultatProjet
 from .config import LimboConfig
 from .analyzer_advanced import AnalyseurAvance
 from collections import defaultdict
+from .reporter import generer_rapport_html
 
 
 def creer_parser() -> argparse.ArgumentParser:
@@ -32,37 +33,31 @@ Exemples d'utilisation:
         nargs="?",
         help="Chemin du fichier ou dossier à analyser",
     )
-
     parser.add_argument(
         "--strict",
         action="store_true",
         help="Affiche aussi le code probablement mort (suspects)",
     )
-
     parser.add_argument(
         "--json",
         action="store_true",
         help="Exporte les résultats en format JSON",
     )
-
     parser.add_argument(
         "--no-imports",
         action="store_true",
         help="Ignore l'analyse des imports",
     )
-
     parser.add_argument(
         "--no-variables",
         action="store_true",
         help="Ignore l'analyse des variables",
     )
-
     parser.add_argument(
         "--no-functions",
         action="store_true",
         help="Ignore l'analyse des fonctions et classes",
     )
-
     parser.add_argument(
         "--init-config",
         action="store_true",
@@ -83,8 +78,11 @@ Exemples d'utilisation:
         action="store_true",
         help="Analyse récursive: si A appelle B mais que A est mort, B est mort aussi."
     )
-    return parser
-
+    parser.add_argument(
+        "--html",
+        metavar="FICHIER",
+        help="Génère un rapport HTML interactif dans le fichier spécifié",
+    )
     return parser
 
 
@@ -528,6 +526,10 @@ def analyser_dossier(chemin: Path, args, config: LimboConfig) -> int:
     Retourne le code de sortie (0 = propre, 1 = problèmes trouvés).
     """
     resultat = analyser_projet_complet(str(chemin), config, deep=args.deep)
+
+    if args.html:
+        generer_rapport_html(resultat, args.html)
+        return 0
 
     if args.json:
         exporter_json_projet(resultat, str(chemin))

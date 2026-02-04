@@ -70,8 +70,8 @@ limbo-collector mon_projet/
 Voici les fonctionnalités prévues pour les prochaines versions :
 
 ### Court terme
-- [ ] **Support étendu des frameworks :** Meilleure détection des "faux positifs" pour Django (modèles, vues), FastAPI (routes) et Flask.
-- [ ] **Support du `.gitignore` :** Ignorer automatiquement les fichiers exclus par Git.
+- [x] **Support étendu des frameworks :** Meilleure détection des "faux positifs" pour Django (modèles, vues), FastAPI (routes) et Flask.
+- [x] **Support du `.gitignore` :** Ignorer automatiquement les fichiers exclus par Git.
 - [ ] **Rapport HTML :** Générer un rapport visuel avec graphiques pour voir la "santé" du projet.
 
 ### Moyen terme
