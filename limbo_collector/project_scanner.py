@@ -24,35 +24,48 @@ class ResultatProjet:
     doublons: List[GroupeDuplique] = field(default_factory=list)
 
     def calculer_score_sante(self) -> float:
-        """Calcule un score de 0 à 100."""
-        if self.total_lignes == 0: return 100.0
-        
-        # Pondération des problèmes
+        """
+        Calcule un score de santé basé sur la densité et la sévérité des problèmes.
+        """
+        if self.total_lignes == 0:
+            return 100.0
+
+        # 1. Définir la sévérité de chaque type de problème (points de pénalité)
         poids = {
-            'classe_morte': 8,
-            'fonction_morte': 5,
-            'unreachable': 4,
+            'classe_morte': 10,
+            'fonction_morte': 6,
+            'methode_morte': 4,
+            'variable_globale_morte': 3,
+            'unreachable': 2,
             'import_mort': 1,
-            'variable_globale_morte': 2,
-            'variable_morte': 1,
-            'param_mort': 1
+            'variable_morte': 0.5,
+            'param_mort': 0.5
         }
-        
-        penalite = (
+
+        # 2. Calculer la pénalité brute en fonction de la sévérité
+        total_imports = sum(len(v) for v in self.imports_morts_par_fichier.values())
+        total_vars = sum(len(v) for v in self.variables_mortes_par_fichier.values())
+
+        penalite_brute = (
             len([e for _, e in self.code_mort if e.type == 'classe']) * poids['classe_morte'] +
-            len([e for _, e in self.code_mort if e.type != 'classe']) * poids['fonction_morte'] +
+            len([e for _, e in self.code_mort if e.type == 'fonction']) * poids['fonction_morte'] +
+            len([e for _, e in self.code_mort if e.type.endswith('methode')]) * poids['methode_morte'] +
             len([e for _, e in self.code_mort if e.type == 'variable_globale']) * poids['variable_globale_morte'] +
-            sum(len(v) for v in self.imports_morts_par_fichier.values()) * poids['import_mort'] +
-            sum(len(v) for v in self.variables_mortes_par_fichier.values()) * poids['variable_morte'] +
+            total_imports * poids['import_mort'] +
+            total_vars * poids['variable_morte'] +
             self.stats_unreachable * poids['unreachable'] +
             self.stats_parametres * poids['param_mort']
         )
         
-        # Le score est basé sur la densité de problèmes par rapport à la taille du projet
-        # Plus le projet est grand, plus il "encaisse" de petites erreurs
-        densite = (penalite / (self.total_lignes / 100)) * 2 
-        score = max(0, 100 - densite)
-        return round(score, 1)
+        # 3. Calculer la densité de problèmes
+        densite_problemes = (penalite_brute / self.total_lignes) * 100
+
+        # 4. Transformer la densité en score sur 100
+        # k est un facteur d'agressivité. Plus k est grand, plus la chute est rapide.
+        k = 0.2
+        score = 100 * (1 - densite_problemes / 100) ** (1 + k * densite_problemes / 100)
+        
+        return round(max(0, score), 1)
 
 
 @dataclass
@@ -330,6 +343,13 @@ def analyser_projet_complet(chemin: str, config=None, deep: bool = False) -> Res
     # Résolution de l'héritage avant l'analyse finale
     graphe.resoudre_heritages_globaux()
     
+    # --- NOUVEAU : Collecter TOUS les appels et instanciations du projet ---
+    appels_globaux = set()
+    instanciations_globales = set()
+    for f in graphe.fichiers.values():
+        appels_globaux.update(f.appels)
+        instanciations_globales.update(f.instanciations)
+    
     total_lignes_projet = 0
 
     code_mort = []
@@ -346,12 +366,13 @@ def analyser_projet_complet(chemin: str, config=None, deep: bool = False) -> Res
         except: 
             pass
 
+        # On passe les appels GLOBAUX au détecteur
         detecteur = DetecteurLimbo(
-            fichier.entites,
-            fichier.appels,
-            fichier.instanciations,
-            fichier.references,
-            fichier.type_hints,
+            fichier.entites, 
+            appels_globaux,
+            instanciations_globales,
+            fichier.references, 
+            fichier.type_hints, 
             fichier.exports_all
         )
         

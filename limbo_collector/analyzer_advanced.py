@@ -407,67 +407,77 @@ class DetecteurLimbo:
         return False
 
     def _evaluer_entite(self, entite: CodeEntity) -> str:
-        """Évalue si une entité est morte, suspecte ou vivante."""
-        
-        # 0. Ignorance explicite
+        """
+        Évalue si une entité est morte, suspecte ou vivante, en suivant un ordre de priorité strict.
+        """
+        # --- NIVEAU 1 : RAISONS CERTAINES DE SURVIE ---
+
+        # 1a. Priorité absolue : L'utilisateur l'a ignoré
         if entite.est_ignoree:
             entite.raison_utilisation = "Ignoré par commentaire"
             return "utilise"
 
-        # 1. Vérification des racines standards et frameworks
+        # 1b. Points d'entrée (standard, frameworks)
         if self._est_racine_standard(entite) or self._est_une_racine_framework(entite):
+            # La raison est définie dans les méthodes appelées
             return "utilise"
 
-        # 2. Utilisation par exports
-        if entite.nom in self.exports_all:
-            entite.raison_utilisation = "Exporté via __all__"
-            return "utilise"
-        
-        # 3. Utilisation par appel direct (le plus fréquent)
+        # 1c. Utilisation directe par appel ou instanciation
         if entite.nom in self.appels:
             entite.raison_utilisation = "Appelé directement"
             return "utilise"
         
-        # 4. Utilisation comme Type Hint
+        if entite.type == 'classe' and entite.nom in self.instanciations:
+            entite.raison_utilisation = "Instanciée"
+            return "utilise"
+
+        # 1d. Exposition publique ou typage
+        if entite.nom in self.exports_all:
+            entite.raison_utilisation = "Exporté via __all__"
+            return "utilise"
+        
         if entite.type == 'classe' and entite.nom in self.type_hints:
             entite.raison_utilisation = "Utilisé comme Type Hint"
             return "utilise"
+        
+        # --- NIVEAU 2 : CAS SPÉCIFIQUES PAR TYPE D'ENTITÉ ---
 
-        # 5. Cas des classes instanciées
-        if entite.type == 'classe':
-            if entite.nom in self.instanciations:
-                entite.raison_utilisation = "Instanciée"
+        if entite.type == 'variable_globale':
+            if entite.nom in self.references_attributs or entite.nom in self.appels:
+                entite.raison_utilisation = "Variable globale référencée"
                 return "utilise"
-            # Si on accède à un attribut de la classe sans l'instancier
+            return "mort"
+        
+        if entite.type == 'classe':
+            # Si on arrive ici, la classe n'est ni instanciée, ni type hint, etc.
+            # On vérifie une dernière utilisation "probable" : un accès statique.
             if entite.nom in self.references_attributs:
-                entite.raison_utilisation = "Référence statique"
+                entite.raison_utilisation = "Référence statique (ex: MaClasse.CONSTANTE)"
                 return "probable"
             return "mort"
 
         # 6. Cas des méthodes
         if entite.type in ['methode', 'staticmethod', 'classmethod']:
-            # Si c'est une méthode publique
+            # L'appel direct a déjà été vérifié. On regarde les cas "probables".
+            # Une méthode publique d'une classe utilisée est suspecte (appel dynamique).
             if not entite.nom.startswith('_'):
-                # Si la classe parente est connue pour hériter d'un truc externe (ex: Django Model)
-                # ou si elle est instanciée, on marque comme "probable" au lieu de "mort"
                 parent_clef = f"{entite.fichier}::{entite.classe_parent}"
                 parent_entite = self.entites.get(parent_clef)
                 
-                if parent_entite and (parent_entite.bases or parent_entite.est_utilisee):
+                # Si la classe parente est utilisée OU si elle hérite de qqch (polymorphisme)
+                if parent_entite and (parent_entite.est_utilisee or parent_entite.bases):
+                    entite.raison_utilisation = "Méthode publique d'une classe vivante"
                     return "probable"
             
-            # Si le nom de la méthode est dans les appels globaux (géré par le scanner après)
-            if entite.nom in self.appels:
-                return "utilise"
-                
+            # Sinon, elle est considérée comme morte à ce stade.
             return "mort"
 
-        # 7. Variables globales
-        if entite.type == 'variable_globale':
-            if entite.nom in self.references_attributs or entite.nom in self.appels:
-                return "utilise"
+        # --- NIVEAU 3 : DERNIER RECOURS ---
+        # Si c'est une fonction simple qui n'a été ni appelée, ni marquée comme racine...
+        if entite.type == 'fonction':
             return "mort"
-
+            
+        # Par défaut, si rien ne l'a sauvé, c'est mort.
         return "mort"
 
     def _est_racine_standard(self, entite: CodeEntity) -> bool:
