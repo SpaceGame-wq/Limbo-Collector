@@ -1,1 +1,3 @@
 limbo_collector/__pycache__/
+*.egg-info
+.venv

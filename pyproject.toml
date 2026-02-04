@@ -1,0 +1,30 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "limbo-collector"
+version = "0.1.0"
+description = "Trouve le code Python ni vivant ni mort: analyse statique pour la dette technique."
+readme = "README.md"
+authors = [{name = "Space Game"}]
+license = {text = "CC BY-NC-SA 4.0"}
+keywords = ["linter", "static analysis", "dead code", "python"]
+classifiers = [
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Operating System :: OS Independent",
+    "Topic :: Software Development :: Quality Assurance",
+]
+dependencies = [
+    "pathspec>=0.11.2",
+    "Jinja2>=3.1.2",
+]
+
+[project.urls]
+Homepage = "https://github.com/SpaceGame-wq/Limbo-Collector"
+Issues = "https://github.com/SpaceGame-wq/Limbo-Collector/issues"
+
+[project.scripts]
+limbo-collector = "limbo_collector.cli:main"
