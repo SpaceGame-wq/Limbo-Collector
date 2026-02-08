@@ -72,7 +72,7 @@ Voici les fonctionnalités prévues pour les prochaines versions :
 ### Court terme
 - [x] **Support étendu des frameworks :** Meilleure détection des "faux positifs" pour Django (modèles, vues), FastAPI (routes) et Flask.
 - [x] **Support du `.gitignore` :** Ignorer automatiquement les fichiers exclus par Git.
-- [ ] **Rapport HTML :** Générer un rapport visuel avec graphiques pour voir la "santé" du projet.
+- [x] **Rapport HTML :** Générer un rapport visuel avec graphiques pour voir la "santé" du projet.
 
 ### Moyen terme
 - [ ] **Auto-Fix (Beta) :** Option pour supprimer automatiquement les imports inutiles et variables mortes (avec backup).
