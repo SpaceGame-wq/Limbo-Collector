@@ -60,12 +60,14 @@ class ResultatProjet:
         # 3. Calculer la densité de problèmes
         densite_problemes = (penalite_brute / self.total_lignes) * 100
 
+        if densite_problemes >= 100:
+            return 0.0
+
         # 4. Transformer la densité en score sur 100
         # k est un facteur d'agressivité. Plus k est grand, plus la chute est rapide.
         k = 0.2
         score = 100 * (1 - densite_problemes / 100) ** (1 + k * densite_problemes / 100)
-        
-        return round(max(0, score), 1)
+        return round(max(0.0, score), 1)
 
 
 @dataclass
@@ -80,7 +82,7 @@ class FichierAnalyse:
     exports_all: Set[str]
     exports: Set[str]  # Ce que ce fichier exporte (pour d'autres fichiers)
     imports_externes: List[Dict] # Liste d'objets import (nom, origine, niveau, est_star)
-
+    imports_dynamiques: Set[Tuple[str, str]]
 
 class GrapheProjet:
     """Représente les dépendances entre fichiers d'un projet."""
@@ -275,7 +277,7 @@ class ScannerProjet:
         
         # Analyse AST
         analyseur = AnalyseurAvance(rel, contenu)
-        entites, appels, instanciations, references, type_hints, exports_all = analyseur.analyser()
+        entites, appels, instanciations, references, type_hints, exports_all, imports_dynamiques = analyseur.analyser()
 
         # Extrait les exports (ce qui est public)
         exports = set()
@@ -295,7 +297,8 @@ class ScannerProjet:
             type_hints=type_hints,
             exports_all=exports_all,
             exports=exports,
-            imports_externes=imports_externes
+            imports_externes=imports_externes,
+            imports_dynamiques=imports_dynamiques
         )
         
         self.graphe.ajouter_fichier(rel, fichier_analyse)
@@ -323,16 +326,54 @@ class ScannerProjet:
         return resultats
         
     def _evaluer_utilisation_globale(self):
-        """Marque les entités utilisées via imports inter-fichiers."""
+        """Marque les entités utilisées via imports inter-fichiers et imports DYNAMIQUES."""
+        tous_patterns_dynamiques = set()
+        for f in self.graphe.fichiers.values():
+            tous_patterns_dynamiques.update(f.imports_dynamiques)
+            
         for chemin, fichier in self.graphe.fichiers.items():
+            
+            # Normalisation du chemin en notation module (a.b.c)
+            nom_module_fichier = chemin.replace('\\', '/').replace('.py', '').replace('/', '.')
+            # Gestion du cas __init__ (ex: plugins.auth.__init__ -> plugins.auth)
+            if nom_module_fichier.endswith('.__init__'):
+                nom_module_fichier = nom_module_fichier[:-9]
+
+            est_importe_dynamiquement = False
+            match_pattern = ""
+            
+            for type_pattern, valeur in tous_patterns_dynamiques:
+                if type_pattern == 'exact':
+                    # Cas 1: Match exact ou fin de chemin (module à la racine ou sous-module)
+                    # Ex: valeur="legacy_lib" matche "legacy_lib" ou "tests.legacy_lib"
+                    if nom_module_fichier == valeur or nom_module_fichier.endswith(f".{valeur}"):
+                        est_importe_dynamiquement = True
+                        match_pattern = valeur
+                        break
+                elif type_pattern == 'prefix':
+                    # Cas 2: Le préfixe est contenu quelque part dans le chemin
+                    # Ex: valeur="plugins." est trouvé dans "tests.plugins.auth"
+                    if valeur in nom_module_fichier:
+                        est_importe_dynamiquement = True
+                        match_pattern = valeur + "*"
+                        break
+            
+            # Application du statut "vivant" aux entités du fichier
             for clef, entite in fichier.entites.items():
                 if entite.est_utilisee:
-                    continue  # Déjà marquée localement
-                    
-                # Vérifie si utilisée par un autre fichier
+                    continue
+                
+                # 1. Vérification Import statique standard
                 if self.graphe.est_utilise_par_autre_fichier(chemin, entite.nom):
                     entite.est_utilisee = True
                     entite.raison_utilisation = f"Importée par autre fichier"
+                    
+                # 2. Vérification Import dynamique
+                elif est_importe_dynamiquement:
+                    # Si le fichier est importé dynamiquement, on sauve tout ce qui est public
+                    if not entite.nom.startswith('_') or entite.nom == '__init__':
+                        entite.est_utilisee = True
+                        entite.raison_utilisation = f"Import dynamique probable ({match_pattern})"
 
 
 def analyser_projet_complet(chemin: str, config=None, deep: bool = False) -> ResultatProjet:
@@ -343,7 +384,7 @@ def analyser_projet_complet(chemin: str, config=None, deep: bool = False) -> Res
     # Résolution de l'héritage avant l'analyse finale
     graphe.resoudre_heritages_globaux()
     
-    # --- NOUVEAU : Collecter TOUS les appels et instanciations du projet ---
+    # Collecter TOUS les appels et instanciations du projet
     appels_globaux = set()
     instanciations_globales = set()
     for f in graphe.fichiers.values():
@@ -386,7 +427,12 @@ def analyser_projet_complet(chemin: str, config=None, deep: bool = False) -> Res
                 entite.est_utilisee = True
                 continue
             
-            # 2. Vérification Polymorphisme (pour les méthodes)
+            # Note: Si marqué "Import dynamique" dans _evaluer_utilisation_globale, 
+            # entite.est_utilisee est déjà True, donc elle n'est pas dans la liste 'morts' retournée par le détecteur.
+            # Le détecteur de base ne voit pas les modifs faites dans ScannerProjet, 
+            # MAIS ScannerProjet modifie directement les objets CodeEntity dans `fichier.entites`.
+            # Donc DetecteurLimbo les voit comme `est_utilisee=True` et les renvoie dans `utilises`.
+            
             if entite.type in ['methode', 'staticmethod', 'classmethod']:
                 if graphe.est_methode_polymorphe_utilisee(entite.nom, entite.classe_parent):
                     morts.remove(entite)

@@ -15,7 +15,6 @@ class AnalyseurAvance(ast.NodeVisitor):
             self.arbre = ast.Module(body=[], type_ignores=[])
         
         self.entites: Dict[str, CodeEntity] = {}
-        self.heritages: Dict[str, str] = {}
         self.appels: Set[str] = set()
         self.instanciations: Set[str] = set()
         self.references_attributs: Dict[str, Set[str]] = defaultdict(set)
@@ -24,9 +23,11 @@ class AnalyseurAvance(ast.NodeVisitor):
         
         self.exports_all: Set[str] = set() # Pour __all__
         self.lignes_ignorees: Set[int] = set() # Pour # limbo: ignore
+        
+        self.imports_dynamiques: Set[Tuple[str, str]] = set()
+        
         self.classe_actuelle: Optional[str] = None
         self.dans_fonction = False
-
         self.entite_actuelle: Optional[str] = None
         
         self._scanner_commentaires()
@@ -72,8 +73,10 @@ class AnalyseurAvance(ast.NodeVisitor):
 
     def analyser(self):
         self.visit(self.arbre)
-        self._resoudre_heritages()
-        return self.entites, self.appels, self.instanciations, self.references_attributs, self.type_hints, self.exports_all
+        # Note: self._resoudre_heritages() est géré globalement maintenant
+        return (self.entites, self.appels, self.instanciations, 
+                self.references_attributs, self.type_hints, self.exports_all, 
+                self.imports_dynamiques)
 
     def visit_Assign(self, node):
         for target in node.targets:
@@ -234,18 +237,58 @@ class AnalyseurAvance(ast.NodeVisitor):
 
     def visit_Call(self, node):
         nom_appele = ""
+        est_dynamique = False
+        
+        # Analyse standard des appels
         if isinstance(node.func, ast.Name):
             nom_appele = node.func.id
+            if nom_appele in ('__import__', 'exec', 'eval'):
+                est_dynamique = True
         elif isinstance(node.func, ast.Attribute):
             nom_appele = node.func.attr
+            # Détection importlib.import_module
+            if nom_appele == 'import_module':
+                est_dynamique = True
         
         if nom_appele:
             self.appels.add(nom_appele)
             if self.entite_actuelle and self.entite_actuelle in self.entites:
                 self.entites[self.entite_actuelle].appels_sortants.add(nom_appele)
         
+        # Analyse spécifique pour imports dynamiques
+        if est_dynamique and node.args:
+            arg = node.args[0]
+            self._analyser_argument_dynamique(arg)
+            
         self.generic_visit(node)
         
+    def _analyser_argument_dynamique(self, node_arg):
+        """Tente de deviner le module importé dynamiquement."""
+        
+        # Cas 1: Chaîne simple ("mon_module")
+        if isinstance(node_arg, ast.Constant) and isinstance(node_arg.value, str):
+            self.imports_dynamiques.add(('exact', node_arg.value))
+            return
+
+        # Cas 2: F-String (f"plugins.{name}")
+        if isinstance(node_arg, ast.JoinedStr):
+            prefixe = ""
+            # On regarde le premier élément de la f-string
+            if node_arg.values and isinstance(node_arg.values[0], ast.Constant):
+                val = node_arg.values[0].value
+                if isinstance(val, str) and ('.' in val or '/' in val):
+                    # Ex: f"plugins.{x}" -> prefixe "plugins."
+                    prefixe = val
+                    self.imports_dynamiques.add(('prefix', prefixe))
+            return
+
+        # Cas 3: Concaténation ("plugins." + name)
+        if isinstance(node_arg, ast.BinOp) and isinstance(node_arg.op, ast.Add):
+            # On cherche récursivement à gauche
+            left = node_arg.left
+            if isinstance(left, ast.Constant) and isinstance(left.value, str):
+                self.imports_dynamiques.add(('prefix', left.value))
+
     def visit_AnnAssign(self, node):
         """Pour x: MyClass = ..."""
         self._extraire_types_annotation(node.annotation)
@@ -281,9 +324,6 @@ class AnalyseurAvance(ast.NodeVisitor):
         elif isinstance(node, ast.Call) and isinstance(node.func, ast.Name):
             return node.func.id
         return ""
-    
-    def _resoudre_heritages(self):
-        pass
 
 
 class DetecteurLimbo:
@@ -340,7 +380,8 @@ class DetecteurLimbo:
 
         # 1. On ne part QUE des vraies racines
         for clef, entite in self.entites.items():
-            if self._est_racine(entite):
+            # Si déjà marqué utilisé (ex: import dynamique), on le considère comme racine
+            if entite.est_utilisee or self._est_racine(entite):
                 self.vivants_finaux.add(clef)
                 file_a_traiter.append(clef)
 
@@ -407,9 +448,12 @@ class DetecteurLimbo:
         return False
 
     def _evaluer_entite(self, entite: CodeEntity) -> str:
-        """
-        Évalue si une entité est morte, suspecte ou vivante, en suivant un ordre de priorité strict.
-        """
+        # --- NIVEAU 0 : DÉJÀ SAUVÉ ---
+        # C'est la ligne CRITIQUE qui manquait. 
+        # Si le ProjectScanner a dit "c'est vivant (import dynamique)", on ne discute pas.
+        if entite.est_utilisee:
+            return "utilise"
+
         # --- NIVEAU 1 : RAISONS CERTAINES DE SURVIE ---
 
         # 1a. Priorité absolue : L'utilisateur l'a ignoré
@@ -440,8 +484,7 @@ class DetecteurLimbo:
             entite.raison_utilisation = "Utilisé comme Type Hint"
             return "utilise"
         
-        # --- NIVEAU 2 : CAS SPÉCIFIQUES PAR TYPE D'ENTITÉ ---
-
+        # --- NIVEAU 2 : CAS SPÉCIFIQUES ---
         if entite.type == 'variable_globale':
             if entite.nom in self.references_attributs or entite.nom in self.appels:
                 entite.raison_utilisation = "Variable globale référencée"
@@ -497,7 +540,7 @@ class DetecteurLimbo:
 def analyser_fichier_avance(chemin: str, deep: bool = False) -> Tuple[List[CodeEntity], List[CodeEntity], List[CodeEntity]]:
     contenu = Path(chemin).read_text(encoding='utf-8')
     analyseur = AnalyseurAvance(chemin, contenu)
-    entites, appels, instanciations, references, type_hints, exports_all = analyseur.analyser()
+    entites, appels, instanciations, references, type_hints, exports_all, imports_dynamiques = analyseur.analyser()
     
     detecteur = DetecteurLimbo(entites, appels, instanciations, references, type_hints, exports_all)
     return detecteur.analyser(recursive=deep)
