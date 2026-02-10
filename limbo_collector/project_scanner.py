@@ -87,6 +87,8 @@ class FichierAnalyse:
     exports: Set[str]  # Ce que ce fichier exporte (pour d'autres fichiers)
     imports_externes: List[Dict] # Liste d'objets import (nom, origine, niveau, est_star)
     imports_dynamiques: Set[Tuple[str, str]]
+    appels_specifiques_globaux: Set[str]
+    appels_racines: Set[str]
 
 class GrapheProjet:
     """Représente les dépendances entre fichiers d'un projet."""
@@ -281,7 +283,7 @@ class ScannerProjet:
         
         # Analyse AST
         analyseur = AnalyseurAvance(rel, contenu)
-        entites, appels, instanciations, references, type_hints, exports_all, imports_dynamiques = analyseur.analyser()
+        entites, appels, instanciations, references, type_hints, exports_all, imports_dynamiques, appels_spec, racines = analyseur.analyser()
 
         # Extrait les exports (ce qui est public)
         exports = set()
@@ -302,7 +304,9 @@ class ScannerProjet:
             exports_all=exports_all,
             exports=exports,
             imports_externes=imports_externes,
-            imports_dynamiques=imports_dynamiques
+            imports_dynamiques=imports_dynamiques,
+            appels_specifiques_globaux=appels_spec,
+            appels_racines=racines
         )
         
         self.graphe.ajouter_fichier(rel, fichier_analyse)
@@ -395,10 +399,14 @@ def analyser_projet_complet(chemin: str, config=None, deep: bool = False) -> Res
     appels_globaux = set()
     instanciations_globales = set()
     tous_dyn = set()
+    appels_specifiques_projet = set()
+    appels_racines_projet = set()
     for f in graphe.fichiers.values():
         appels_globaux.update(f.appels)
         instanciations_globales.update(f.instanciations)
         tous_dyn.update(f.imports_dynamiques)
+        appels_specifiques_projet.update(f.appels_specifiques_globaux)
+        appels_racines_projet.update(f.appels_racines)
     
     total_lignes_projet = 0
 
@@ -428,7 +436,9 @@ def analyser_projet_complet(chemin: str, config=None, deep: bool = False) -> Res
             instanciations_globales,
             fichier.references, 
             fichier.type_hints, 
-            fichier.exports_all
+            fichier.exports_all,
+            appels_specifiques_projet,
+            appels_racines_projet
         )
         
         morts, suspects, utilises = detecteur.analyser(recursive=deep)

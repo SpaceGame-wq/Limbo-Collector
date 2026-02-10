@@ -17,6 +17,8 @@ class CodeEntity:
     signature_structurelle: str = ""
     appels_sortants: Set[str] = field(default_factory=set)
     docstring: str = ""
+    appels_specifiques: Set[str] = field(default_factory=set) # Format: "Classe.methode"
+    types_utilises: Set[str] = field(default_factory=set)
 
 @dataclass
 class ImportInutile:

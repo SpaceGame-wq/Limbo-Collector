@@ -29,6 +29,11 @@ class AnalyseurAvance(ast.NodeVisitor):
         self.classe_actuelle: Optional[str] = None
         self.dans_fonction = False
         self.entite_actuelle: Optional[str] = None
+
+        self.scope_types: Dict[str, str] = {} # Mapping nom_variable -> NomClasse
+        self.appels_specifiques_globaux: Set[str] = set()
+
+        self.appels_racines: Set[str] = set()
         
         self._scanner_commentaires()
 
@@ -70,13 +75,64 @@ class AnalyseurAvance(ast.NodeVisitor):
                     structure.append(f"CONST:{type(val).__name__}")
 
         return "-".join(structure)
+    
+    def _extraire_nom_type(self, node) -> Optional[str]:
+        """Extrait le nom simple d'un type depuis une annotation."""
+        if isinstance(node, ast.Name): return node.id
+        if isinstance(node, ast.Attribute): return node.attr
+        if isinstance(node, ast.Subscript): return self._extraire_nom_type(node.value)
+        return None
+
 
     def analyser(self):
         self.visit(self.arbre)
         # Note: self._resoudre_heritages() est géré globalement maintenant
         return (self.entites, self.appels, self.instanciations, 
                 self.references_attributs, self.type_hints, self.exports_all, 
-                self.imports_dynamiques)
+                self.imports_dynamiques, self.appels_specifiques_globaux,
+                self.appels_racines)
+    
+    def visit_AnnAssign(self, node):
+        """Capte x: MyClass = ..."""
+        if isinstance(node.target, ast.Name):
+            type_nom = self._extraire_nom_type(node.annotation)
+            if type_nom:
+                self.scope_types[node.target.id] = type_nom
+        self.generic_visit(node)
+
+    def visit_FunctionDef(self, node):
+        # Nouveau : On entre dans une fonction, on réinitialise le scope des types
+        ancien_scope = self.scope_types.copy()
+        
+        # On enregistre les types des arguments
+        for arg in node.args.args:
+            if arg.annotation:
+                type_nom = self._extraire_nom_type(arg.annotation)
+                if type_nom:
+                    self.scope_types[arg.arg] = type_nom
+
+        self.dans_fonction = True
+        self._traiter_fonction_ou_methode(node)
+        
+        # On nettoie le scope en sortant
+        self.scope_types = ancien_scope
+        self.dans_fonction = False
+
+    def visit_Attribute(self, node):
+        """Capte user.save() et tente de lier 'user' à une classe."""
+        if isinstance(node.value, ast.Name):
+            var_nom = node.value.id
+            if var_nom in self.scope_types:
+                type_classe = self.scope_types[var_nom]
+                methode_nom = node.attr
+                # On a trouvé un appel sémantique ! Ex: "User.save"
+                appel_complet = f"{type_classe}.{methode_nom}"
+                self.appels_specifiques_globaux.add(appel_complet)
+                
+                if self.entite_actuelle and self.entite_actuelle in self.entites:
+                    self.entites[self.entite_actuelle].appels_specifiques.add(appel_complet)
+        
+        self.generic_visit(node)
 
     def visit_Assign(self, node):
         for target in node.targets:
@@ -185,6 +241,16 @@ class AnalyseurAvance(ast.NodeVisitor):
             if arg.annotation:
                 self._extraire_types_annotation(arg.annotation)
         
+        # On capture les types utilisés dans la signature
+        types_trouves = set()
+        if node.returns: 
+            t = self._extraire_nom_type(node.returns)
+            if t: types_trouves.add(t)
+        for arg in node.args.args:
+            if arg.annotation:
+                t = self._extraire_nom_type(arg.annotation)
+                if t: types_trouves.add(t)
+        
         ignoree = (node.lineno in self.lignes_ignorees or 
                    (node.lineno - 1) in self.lignes_ignorees)
         
@@ -220,7 +286,8 @@ class AnalyseurAvance(ast.NodeVisitor):
                 decorateurs=decorateurs,
                 est_ignoree=ignoree,
                 signature_structurelle=sig,
-                docstring=doc
+                docstring=doc,
+                types_utilises=types_trouves
             )
         else:
             clef = f"{self.chemin}::{nom}"
@@ -232,7 +299,8 @@ class AnalyseurAvance(ast.NodeVisitor):
                 decorateurs=decorateurs,
                 est_ignoree=ignoree,
                 signature_structurelle=sig,
-                docstring=doc
+                docstring=doc,
+                types_utilises=types_trouves
             )
         
         ancienne_entite = self.entite_actuelle
@@ -260,6 +328,8 @@ class AnalyseurAvance(ast.NodeVisitor):
             self.appels.add(nom_appele)
             if self.entite_actuelle and self.entite_actuelle in self.entites:
                 self.entites[self.entite_actuelle].appels_sortants.add(nom_appele)
+            else:
+                self.appels_racines.add(nom_appele)
         
         # Analyse spécifique pour imports dynamiques
         if est_dynamique and node.args:
@@ -335,14 +405,17 @@ class AnalyseurAvance(ast.NodeVisitor):
 class DetecteurLimbo:
     def __init__(self, entites: Dict[str, CodeEntity], appels: Set[str], 
                  instanciations: Set[str], references_attributs: Dict[str, Set[str]],
-                 type_hints: Set[str], exports_all: Set[str]):
+                 type_hints: Set[str], exports_all: Set[str], 
+                 appels_specifiques_projet: Set[str] = None, appels_racines: Set[str] = None):
         self.entites = entites
         self.appels = appels
         self.instanciations = instanciations
         self.references_attributs = references_attributs
         self.type_hints = type_hints
         self.exports_all = exports_all
+        self.appels_specifiques_projet = appels_specifiques_projet or set()
         self.vivants_finaux: Set[str] = set()
+        self.appels_racines = appels_racines or set()
         
         self.methodes_magiques = {
             '__init__', '__del__', '__repr__', '__str__', '__eq__', '__ne__',
@@ -390,20 +463,36 @@ class DetecteurLimbo:
             if entite.est_utilisee or self._est_racine(entite):
                 self.vivants_finaux.add(clef)
                 file_a_traiter.append(clef)
+        
+        # 2. On part des appels faits au niveau global (Top-level / __main__)
+        for nom_appele in self.appels_racines:
+            for clef_cible, entite_cible in self.entites.items():
+                if entite_cible.nom == nom_appele and clef_cible not in self.vivants_finaux:
+                    self.vivants_finaux.add(clef_cible)
+                    file_a_traiter.append(clef_cible)
 
-        # 2. Propagation
+        # 3. Propagation
         while file_a_traiter:
             clef_actuelle = file_a_traiter.pop(0)
             entite_actuelle = self.entites[clef_actuelle]
             
-            for nom_appele in entite_actuelle.appels_sortants:
-                # On cherche l'entité correspondante dans LE MÊME FICHIER ou via import
+            # 1. Propagation par appels classiques (noms de fonctions)
+            noms_a_chercher = entite_actuelle.appels_sortants | entite_actuelle.types_utilises
+            
+            # 2. Propagation par appels typés (User.save)
+            # On transforme "User.save" en nom de méthode "save" pour la recherche
+            for appel_spec in entite_actuelle.appels_specifiques:
+                if "." in appel_spec:
+                    noms_a_chercher.add(appel_spec.split(".")[-1])
+                    noms_a_chercher.add(appel_spec.split(".")[0]) # On sauve aussi la Classe
+
+            for nom in noms_a_chercher:
                 for clef_cible, entite_cible in self.entites.items():
-                    if entite_cible.nom == nom_appele and clef_cible not in self.vivants_finaux:
+                    if entite_cible.nom == nom and clef_cible not in self.vivants_finaux:
                         self.vivants_finaux.add(clef_cible)
                         file_a_traiter.append(clef_cible)
 
-        # 3. Récupération des résultats
+        # 4. Récupération des résultats
         for clef, entite in self.entites.items():
             if clef in self.vivants_finaux:
                 entite.est_utilisee = True
@@ -506,9 +595,17 @@ class DetecteurLimbo:
             return "mort"
 
         # 6. Cas des méthodes
-        if entite.type in ['methode', 'staticmethod', 'classmethod']:
-            # L'appel direct a déjà été vérifié. On regarde les cas "probables".
-            # Une méthode publique d'une classe utilisée est suspecte (appel dynamique).
+        if entite.type in ['methode', 'staticmethod', 'classmethod', 'property']:
+            
+            # A. VÉRIFICATION SÉMANTIQUE (TYPE HINTS)
+            # On vérifie si un appel précis vers CETTE classe a été détecté
+            clef_specifique = f"{entite.classe_parent}.{entite.nom}"
+            if clef_specifique in self.appels_specifiques_projet:
+                entite.raison_utilisation = f"Appel typé détecté ({clef_specifique})"
+                return "utilise"
+
+            # B. TA LOGIQUE EXISTANTE (GARDÉE INTACTE)
+            # On regarde les cas "probables" si ce n'est pas une méthode privée
             if not entite.nom.startswith('_'):
                 parent_clef = f"{entite.fichier}::{entite.classe_parent}"
                 parent_entite = self.entites.get(parent_clef)
@@ -546,7 +643,7 @@ class DetecteurLimbo:
 def analyser_fichier_avance(chemin: str, deep: bool = False) -> Tuple[List[CodeEntity], List[CodeEntity], List[CodeEntity]]:
     contenu = Path(chemin).read_text(encoding='utf-8')
     analyseur = AnalyseurAvance(chemin, contenu)
-    entites, appels, instanciations, references, type_hints, exports_all, imports_dynamiques = analyseur.analyser()
+    entites, appels, instanciations, references, type_hints, exports_all, imports_dynamiques, appels_spec, racines = analyseur.analyser()
     
-    detecteur = DetecteurLimbo(entites, appels, instanciations, references, type_hints, exports_all)
+    detecteur = DetecteurLimbo(entites, appels, instanciations, references, type_hints, exports_all, appels_spec, racines)
     return detecteur.analyser(recursive=deep)

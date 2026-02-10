@@ -343,7 +343,7 @@ def analyser_fichier(chemin: Path, args, config: LimboConfig) -> int:
 
     contenu = chemin.read_text(encoding='utf-8')
     analyseur = AnalyseurAvance(str(chemin), contenu)
-    entites, _, _, _, _, _, _ = analyseur.analyser()
+    entites, _, _, _, _, _, _, _, _ = analyseur.analyser()
 
     # Logique de détection de doublons locale
     signatures = defaultdict(list)
