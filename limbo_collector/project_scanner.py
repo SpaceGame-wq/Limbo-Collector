@@ -4,7 +4,7 @@ import pathspec
 from dataclasses import dataclass, field
 from typing import List, Set, Dict, Optional, Tuple, DefaultDict
 from collections import defaultdict
-from .models import CodeEntity, ImportInutile, VariableInutilisee, GroupeDuplique
+from .models import CodeEntity, ImportInutile, VariableInutilisee, GroupeDuplique, CodeUnreachable, ParametreInutilise
 from .analyzer_advanced import AnalyseurAvance, DetecteurLimbo
 from .imports import analyser_imports_fichier
 from .variables import trouver_variables_inutilisees
@@ -22,6 +22,10 @@ class ResultatProjet:
     stats_parametres: int = 0
     stats_unreachable: int = 0
     doublons: List[GroupeDuplique] = field(default_factory=list)
+    unreachable_par_fichier: Dict[str, List[CodeUnreachable]] = field(default_factory=dict)
+    params_par_fichier: Dict[str, List[ParametreInutilise]] = field(default_factory=dict)
+    graphe_imports: Dict[str, List[str]] = field(default_factory=dict) # Pour voir qui importe qui
+    imports_dynamiques_du_projet: List[Tuple[str, str]] = field(default_factory=list)
 
     def calculer_score_sante(self) -> float:
         """
@@ -377,33 +381,43 @@ class ScannerProjet:
 
 
 def analyser_projet_complet(chemin: str, config=None, deep: bool = False) -> ResultatProjet:
-    """Analyse complète d'un projet et retourne les résultats structurés."""
+    """Analyse complète d'un projet et retourne les résultats structurés pour Console, HTML et JSON."""
+    from .unreachable import trouver_code_unreachable
+    from .parameters import trouver_parametres_inutilises
+
     scanner = ScannerProjet(chemin, config)
     graphe = scanner.scanner(config)
     
     # Résolution de l'héritage avant l'analyse finale
     graphe.resoudre_heritages_globaux()
     
-    # Collecter TOUS les appels et instanciations du projet
+    # Collecter TOUS les appels et instanciations du projet pour la détection globale
     appels_globaux = set()
     instanciations_globales = set()
+    tous_dyn = set()
     for f in graphe.fichiers.values():
         appels_globaux.update(f.appels)
         instanciations_globales.update(f.instanciations)
+        tous_dyn.update(f.imports_dynamiques)
     
     total_lignes_projet = 0
 
     code_mort = []
     code_suspect = []
-    imports_morts = {}
-    variables_mortes = {}
-    
+    imports_morts_par_fichier = {}
+    variables_mortes_par_fichier = {}
+    unreachable_par_fichier = {}
+    params_par_fichier = {}
+    graphe_imports = {}
+
     # Analyse chaque fichier avec le détecteur + comptage lignes
     for chemin_fichier, fichier in graphe.fichiers.items():
+        abs_p = str(Path(chemin) / chemin_fichier)
+        
         # Compter les lignes du fichier
         try:
-            p = Path(chemin) / chemin_fichier
-            total_lignes_projet += len(p.read_text(encoding='utf-8').splitlines())
+            lignes = Path(abs_p).read_text(encoding='utf-8').splitlines()
+            total_lignes_projet += len(lignes)
         except: 
             pass
 
@@ -442,18 +456,25 @@ def analyser_projet_complet(chemin: str, config=None, deep: bool = False) -> Res
         code_suspect.extend([(chemin_fichier, s) for s in suspects])
             
         try:
-            abs_p = str(Path(chemin) / chemin_fichier)
-            imports_morts[chemin_fichier] = analyser_imports_fichier(abs_p)
-            variables_mortes[chemin_fichier] = trouver_variables_inutilisees(Path(abs_p).read_text(encoding='utf-8'))
+            contenu = Path(abs_p).read_text(encoding='utf-8')
+            imports_morts_par_fichier[chemin_fichier] = analyser_imports_fichier(abs_p)
+            variables_mortes_par_fichier[chemin_fichier] = trouver_variables_inutilisees(contenu)
+            unreachable_par_fichier[chemin_fichier] = trouver_code_unreachable(abs_p)
+            params_par_fichier[chemin_fichier] = trouver_parametres_inutilises(abs_p)
         except:
-            imports_morts[chemin_fichier] = []
-            variables_mortes[chemin_fichier] = []
+            imports_morts_par_fichier[chemin_fichier] = []
+            variables_mortes_par_fichier[chemin_fichier] = []
+            unreachable_par_fichier[chemin_fichier] = []
+            params_par_fichier[chemin_fichier] = []
+
+        # Graphe d'imports (Qui importe ce fichier ?)
+        graphe_imports[chemin_fichier] = list(graphe.imports_entre_fichiers.get(chemin_fichier, set()))
 
     # Détection des doublons
     signatures = defaultdict(list)
     for chemin_f, fichier in graphe.fichiers.items():
         for entite in fichier.entites.values():
-            if entite.signature_structurelle: # On n'analyse que si une signature existe
+            if entite.signature_structurelle:
                 signatures[entite.signature_structurelle].append((chemin_f, entite))
         
     doublons = []
@@ -466,8 +487,14 @@ def analyser_projet_complet(chemin: str, config=None, deep: bool = False) -> Res
         total_lignes=total_lignes_projet,
         code_mort=code_mort,
         code_suspect=code_suspect,
-        imports_morts_par_fichier=imports_morts,
-        variables_mortes_par_fichier=variables_mortes,
+        imports_morts_par_fichier=imports_morts_par_fichier,
+        variables_mortes_par_fichier=variables_mortes_par_fichier,
         erreurs=scanner.erreurs,
-        doublons=doublons
+        doublons=doublons,
+        stats_unreachable=sum(len(v) for v in unreachable_par_fichier.values()),
+        stats_parametres=sum(len(v) for v in params_par_fichier.values()),
+        unreachable_par_fichier=unreachable_par_fichier,
+        params_par_fichier=params_par_fichier,
+        graphe_imports=graphe_imports,
+        imports_dynamiques_du_projet=list(tous_dyn)
     )

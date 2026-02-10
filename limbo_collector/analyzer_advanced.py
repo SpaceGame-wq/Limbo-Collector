@@ -127,6 +127,8 @@ class AnalyseurAvance(ast.NodeVisitor):
         # Enregistrement pour les Type Hints
         for b in bases_classe:
             self.type_hints.add(b)
+
+        doc = ast.get_docstring(node) or ""
         
         ignoree = (node.lineno in self.lignes_ignorees or 
                    (node.lineno - 1) in self.lignes_ignorees)
@@ -139,7 +141,8 @@ class AnalyseurAvance(ast.NodeVisitor):
             fichier=self.chemin,
             bases=bases_classe,
             decorateurs=[self._nom_decorateur(d) for d in node.decorator_list],
-            est_ignoree=ignoree
+            est_ignoree=ignoree,
+            docstring=doc
         )
         
         ancien_contexte = self.classe_actuelle
@@ -196,6 +199,7 @@ class AnalyseurAvance(ast.NodeVisitor):
             # On ignore les fonctions trop simples (ex: pass ou un seul return simple)
             if sig.count('-') < 3: 
                 sig = ""
+        doc = ast.get_docstring(node) or ""
         
         if self.classe_actuelle:
             type_methode = 'methode'
@@ -215,7 +219,8 @@ class AnalyseurAvance(ast.NodeVisitor):
                 classe_parent=self.classe_actuelle,
                 decorateurs=decorateurs,
                 est_ignoree=ignoree,
-                signature_structurelle=sig
+                signature_structurelle=sig,
+                docstring=doc
             )
         else:
             clef = f"{self.chemin}::{nom}"
@@ -226,7 +231,8 @@ class AnalyseurAvance(ast.NodeVisitor):
                 fichier=self.chemin,
                 decorateurs=decorateurs,
                 est_ignoree=ignoree,
-                signature_structurelle=sig
+                signature_structurelle=sig,
+                docstring=doc
             )
         
         ancienne_entite = self.entite_actuelle

@@ -499,7 +499,7 @@ def afficher_rapport_sante(resultat: ResultatProjet):
 
 
 def exporter_json_projet(resultat: ResultatProjet, chemin: str, output_path: str = None) -> None:
-    """Exporte un rapport complet de santé du projet en JSON."""
+    """Exporte un rapport JSON exhaustif avec traçabilité complète."""
     
     score = resultat.calculer_score_sante()
     
@@ -508,35 +508,43 @@ def exporter_json_projet(resultat: ResultatProjet, chemin: str, output_path: str
             "outil": "Limbo Collector",
             "version": __version__,
             "date_analyse": datetime.now().isoformat(),
-            "mode": "projet"
+            "mode": "projet",
+            "arguments_analyse": sys.argv[1:],
+            "patterns_dynamiques_detectes": [
+                {"type": t, "valeur": v} for t, v in resultat.imports_dynamiques_du_projet
+            ]
         },
         "projet": {
+            "nom": Path(chemin).name,
             "racine": str(Path(chemin).resolve()),
-            "fichiers_scannes": resultat.fichiers_analyses,
-            "total_lignes_code": resultat.total_lignes
+            "metrics": {
+                "fichiers_scannes": resultat.fichiers_analyses,
+                "total_lignes_code": resultat.total_lignes,
+                "score_sante": score,
+                "appreciation": "Excellent" if score >= 90 else "Bon" if score >= 75 else "Passable" if score >= 50 else "Critique",
+                "erreurs_rencontrees": resultat.erreurs,
+                "densite_mort_par_1000_loc": round((len(resultat.code_mort) / resultat.total_lignes * 1000), 2) if resultat.total_lignes > 0 else 0
+            }
         },
-        "rapport_sante": {
-            "score_global": score,
-            "appreciation": "Excellent" if score >= 90 else "Bon" if score >= 75 else "Passable" if score >= 50 else "Critique",
-            "erreurs_rencontrees": resultat.erreurs
+        "dependances": {
+            "graphe_imports": resultat.graphe_imports, # Liste des fichiers et ce qu'ils importent
         },
         "statistiques_globales": {
-            "total_entites_mortes": len(resultat.code_mort),
-            "total_entites_suspectes": len(resultat.code_suspect),
-            "total_imports_inutilises": sum(len(v) for v in resultat.imports_morts_par_fichier.values()),
-            "total_variables_fantomes": sum(len(v) for v in resultat.variables_mortes_par_fichier.values()),
-            "total_unreachable": resultat.stats_unreachable,
-            "total_doublons": len(resultat.doublons)
+            "entites_mortes": len(resultat.code_mort),
+            "entites_suspectes": len(resultat.code_suspect),
+            "imports_inutilises": sum(len(v) for v in resultat.imports_morts_par_fichier.values()),
+            "variables_inutilisees": sum(len(v) for v in resultat.variables_mortes_par_fichier.values()),
+            "code_unreachable": sum(len(v) for v in resultat.unreachable_par_fichier.values()),
+            "parametres_inutilises": sum(len(v) for v in resultat.params_par_fichier.values())
         },
         "analyses_detaillees": {
             "fichiers": {}
         },
-        "duplication": [
+        "duplication_code": [
             {
                 "id_groupe": i,
-                "nombre_occurrences": len(g.entites),
-                "signature": g.signature[:50] + "...",
-                "emplacements": [
+                "force_structurelle": len(g.signature.split('-')),
+                "occurrences": [
                     {"fichier": path, "nom": ent.nom, "ligne": ent.ligne} 
                     for path, ent in g.entites
                 ]
@@ -544,23 +552,49 @@ def exporter_json_projet(resultat: ResultatProjet, chemin: str, output_path: str
         ]
     }
 
-    # Organisation des résultats par fichier pour plus de clarté
+    # Remplissage des fichiers
     for f in resultat.imports_morts_par_fichier.keys():
         morts_f = [e for path, e in resultat.code_mort if path == f]
         suspects_f = [e for path, e in resultat.code_suspect if path == f]
         
         resultat_json["analyses_detaillees"]["fichiers"][f] = {
-            "code_mort": [{"nom": e.nom, "type": e.type, "ligne": e.ligne, "raison": e.raison_utilisation} for e in morts_f],
-            "suspects": [{"nom": e.nom, "type": e.type, "ligne": e.ligne} for e in suspects_f],
-            "imports": [{"nom": i.nom, "ligne": i.ligne, "type": i.type} for i in resultat.imports_morts_par_fichier.get(f, [])],
-            "variables": [{"nom": v.nom, "ligne": v.ligne, "fonction": v.fonction_parent} for v in resultat.variables_mortes_par_fichier.get(f, [])]
+            "code_mort": [
+                {
+                    "nom": e.nom, 
+                    "type": e.type, 
+                    "ligne": e.ligne, 
+                    "raison_limbo": e.raison_utilisation,
+                    "signature": e.signature_structurelle,
+                    "docstring": getattr(e, 'docstring', "")
+                } for e in morts_f
+            ],
+            "suspects": [
+                {
+                    "nom": e.nom, "type": e.type, "ligne": e.ligne
+                } for e in suspects_f
+            ],
+            "imports": [
+                {"nom": i.nom, "ligne": i.ligne, "source": i.module_source} 
+                for i in resultat.imports_morts_par_fichier.get(f, [])
+            ],
+            "variables": [
+                {"nom": v.nom, "ligne": v.ligne, "contexte": v.fonction_parent} 
+                for v in resultat.variables_mortes_par_fichier.get(f, [])
+            ],
+            "unreachable": [
+                {"debut": u.ligne_debut, "fin": u.ligne_fin, "cause": u.type} 
+                for u in resultat.unreachable_par_fichier.get(f, [])
+            ],
+            "parametres": [
+                {"nom": p.nom, "ligne": p.ligne, "fonction": p.fonction} 
+                for p in resultat.params_par_fichier.get(f, [])
+            ]
         }
 
     json_data = json.dumps(resultat_json, indent=2, ensure_ascii=False)
-    
     if output_path:
         Path(output_path).write_text(json_data, encoding='utf-8')
-        print(f" Rapport JSON enregistré: {output_path}")
+        print(f" Rapport JSON généré: {output_path}")
     else:
         print(json_data)
 

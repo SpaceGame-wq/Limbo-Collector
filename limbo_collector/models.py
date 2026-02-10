@@ -16,6 +16,7 @@ class CodeEntity:
     est_ignoree: bool = False
     signature_structurelle: str = ""
     appels_sortants: Set[str] = field(default_factory=set)
+    docstring: str = ""
 
 @dataclass
 class ImportInutile:
