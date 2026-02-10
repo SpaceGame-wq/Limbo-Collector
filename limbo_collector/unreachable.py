@@ -1,5 +1,5 @@
 import ast
-from typing import List, Optional
+from typing import List, Optional, Set
 from .models import CodeUnreachable
 
 
@@ -7,6 +7,16 @@ class DetecteurUnreachable(ast.NodeVisitor):
     def __init__(self):
         self.problemes: List[CodeUnreachable] = []
         self.scope_actuel: Optional[ast.AST] = None
+        # Hiérarchie simplifiée pour détecter le masquage d'exceptions
+        self.exceptions_parentes = {
+            'Exception': ['ArithmeticError', 'AssertionError', 'AttributeError', 'BufferError', 
+                         'EOFError', 'ImportError', 'LookupError', 'MemoryError', 'NameError', 
+                         'OSError', 'ReferenceError', 'RuntimeError', 'SyntaxError', 
+                         'SystemError', 'TypeError', 'ValueError', 'Warning'],
+            'ArithmeticError': ['FloatingPointError', 'OverflowError', 'ZeroDivisionError'],
+            'LookupError': ['IndexError', 'KeyError'],
+            'OSError': ['FileNotFoundError', 'PermissionError', 'IsADirectoryError'],
+        }
         
     def analyser(self, contenu: str) -> List[CodeUnreachable]:
         try:
@@ -18,7 +28,6 @@ class DetecteurUnreachable(ast.NodeVisitor):
     
     def visit_FunctionDef(self, node):
         self._analyser_corps(node.body, node.lineno)
-        self.generic_visit(node)
     
     def visit_AsyncFunctionDef(self, node):
         self._analyser_corps(node.body, node.lineno)
@@ -73,7 +82,44 @@ class DetecteurUnreachable(ast.NodeVisitor):
             self._analyser_corps(node.body, node.lineno)
             if node.orelse:
                 self._analyser_corps(node.orelse, node.lineno)
-        
+        self.generic_visit(node)
+
+    def visit_Try(self, node):
+        """Analyse les blocs try/except/else/finally."""
+        # 1. Corps du try
+        self._analyser_corps(node.body, node.lineno)
+
+        # 2. Détection else inatteignable (si le try finit par un return/raise)
+        if self._bloc_sort_systematiquement(node.body) and node.orelse:
+            self.problemes.append(CodeUnreachable(
+                ligne_debut=node.orelse[0].lineno,
+                ligne_fin=self._derniere_ligne_liste(node.orelse),
+                type='unreachable_else',
+                description="Bloc 'else' inatteignable : le bloc 'try' sort systématiquement"
+            ))
+
+        # 3. Analyse des except (Handlers)
+        exceptions_vues: Set[str] = set()
+        for handler in node.handlers:
+            nom_ex = self._extraire_nom_exception(handler.type)
+            
+            # Détection de masquage (shadowing) d'exceptions
+            for vue in exceptions_vues:
+                if vue == 'Exception' or nom_ex in self.exceptions_parentes.get(vue, []):
+                    self.problemes.append(CodeUnreachable(
+                        ligne_debut=handler.lineno,
+                        ligne_fin=self._derniere_ligne(handler),
+                        type='shadowed_except',
+                        description=f"Bloc except {nom_ex or ''} inatteignable : déjà capturé par {vue} plus haut"
+                    ))
+            
+            if nom_ex: exceptions_vues.add(nom_ex)
+            self._analyser_corps(handler.body, handler.lineno)
+
+        # 4. Bloc finally
+        if node.finalbody:
+            self._analyser_corps(node.finalbody, node.lineno)
+            
         self.generic_visit(node)
     
     def _analyser_corps(self, corps: List[ast.stmt], ligne_parent: int):
@@ -82,57 +128,42 @@ class DetecteurUnreachable(ast.NodeVisitor):
             return
             
         for i, instruction in enumerate(corps):
-            # Vérifie si c'est une instruction de sortie
-            if isinstance(instruction, (ast.Return, ast.Raise)):
-                # Tout ce qui suit est unreachable
+            # Récursion pour les blocs imbriqués (Try, If, etc.)
+            if isinstance(instruction, (ast.If, ast.Try, ast.For, ast.While)):
+                self.visit(instruction)
+
+            # Vérifie les instructions de sortie
+            if isinstance(instruction, (ast.Return, ast.Raise, ast.Break, ast.Continue)):
                 if i + 1 < len(corps):
                     suivante = corps[i + 1]
                     derniere = corps[-1]
-                    type_sortie = 'after_return' if isinstance(instruction, ast.Return) else 'after_raise'
-                    nom_sortie = 'return' if isinstance(instruction, ast.Return) else 'raise'
+                    type_nom = type(instruction).__name__.lower()
                     
                     self.problemes.append(CodeUnreachable(
                         ligne_debut=suivante.lineno,
                         ligne_fin=self._derniere_ligne(derniere),
-                        type=type_sortie,
-                        description=f"Code après {nom_sortie} (ligne {instruction.lineno})"
+                        type=f'after_{type_nom}',
+                        description=f"Code après {type_nom} (ligne {instruction.lineno})"
                     ))
-                break  # Stoppe l'analyse de ce bloc
-            
-            elif isinstance(instruction, ast.Break):
-                if i + 1 < len(corps):
-                    suivante = corps[i + 1]
-                    derniere = corps[-1]
-                    self.problemes.append(CodeUnreachable(
-                        ligne_debut=suivante.lineno,
-                        ligne_fin=self._derniere_ligne(derniere),
-                        type='after_break',
-                        description=f"Code après break (ligne {instruction.lineno})"
-                    ))
-                break
-            
-            elif isinstance(instruction, ast.Continue):
-                if i + 1 < len(corps):
-                    suivante = corps[i + 1]
-                    derniere = corps[-1]
-                    self.problemes.append(CodeUnreachable(
-                        ligne_debut=suivante.lineno,
-                        ligne_fin=self._derniere_ligne(derniere),
-                        type='after_continue',
-                        description=f"Code après continue (ligne {instruction.lineno})"
-                    ))
-                break
-            
-            elif isinstance(instruction, ast.If):
-                # Récursion : analyse le if pour voir si tout son corps est unreachable
-                self.visit(instruction)
-    
+                break 
+
+    def _extraire_nom_exception(self, type_node) -> Optional[str]:
+        """Récupère le nom de l'exception dans un except."""
+        if isinstance(type_node, ast.Name):
+            return type_node.id
+        if isinstance(type_node, ast.Attribute):
+            return type_node.attr
+        return None
+
+    def _bloc_sort_systematiquement(self, corps: List[ast.stmt]) -> bool:
+        """Vérifie si la dernière instruction d'un bloc est une sortie."""
+        if not corps: return False
+        return isinstance(corps[-1], (ast.Return, ast.Raise, ast.Break, ast.Continue))
+
     def _est_condition_toujours_fausse(self, node: ast.expr) -> bool:
         """Vérifie si une condition est littéralement False/0/''/None/[]/{}/()."""
         if isinstance(node, ast.Constant):
             return not bool(node.value)
-        elif isinstance(node, ast.NameConstant):  # Python < 3.8
-            return not node.value
         elif isinstance(node, ast.Name) and node.id == 'False':
             return True
         return False
@@ -141,8 +172,6 @@ class DetecteurUnreachable(ast.NodeVisitor):
         """Vérifie si une condition est littéralement True."""
         if isinstance(node, ast.Constant):
             return bool(node.value) is True
-        elif isinstance(node, ast.NameConstant):  # Python < 3.8
-            return node.value is True
         elif isinstance(node, ast.Name) and node.id == 'True':
             return True
         return False
