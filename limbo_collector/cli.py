@@ -10,6 +10,8 @@ from .config import LimboConfig
 from .analyzer_advanced import AnalyseurAvance
 from collections import defaultdict
 from .reporter import generer_rapport_html
+from datetime import datetime
+from . import __version__
 
 
 def creer_parser() -> argparse.ArgumentParser:
@@ -42,6 +44,11 @@ Exemples d'utilisation:
         "--json",
         action="store_true",
         help="Exporte les résultats en format JSON",
+    )
+    parser.add_argument(
+        "--json-file",
+        metavar="FICHIER",
+        help="Enregistre le rapport JSON dans le fichier spécifié",
     )
     parser.add_argument(
         "--no-imports",
@@ -220,78 +227,104 @@ def exporter_json_fichier(
     variables: List[VariableInutilisee],
     unreachable: List[CodeUnreachable],
     params: List[ParametreInutilise],
-    chemin: str
+    chemin: str,
+    output_path: str = None
 ) -> None:
-    """Exporte les résultats d'un fichier en JSON."""
+    """Exporte un rapport pour un fichier unique."""
+    
+    # Calcul d'un mini-score de santé pour le fichier
+    total_loc = sum(1 for _ in Path(chemin).read_text(encoding='utf-8').splitlines()) if Path(chemin).exists() else 0
+    certains = len(morts) + len(imports) + len(variables) + len(unreachable) + len(params)
+    score = max(0, 100 - (certains * 5)) # Calcul simplifié pour un fichier
+
     resultat = {
-        "mode": "fichier",
-        "chemin": chemin,
-        "resume": {
-            "total_morts": len(morts),
-            "total_suspects": len(suspects),
-            "total_imports": len(imports),
-            "total_variables": len(variables),
-            "total_unreachable": len(unreachable),
-            "total_params": len(params)
+        "metadata": {
+            "outil": "Limbo Collector",
+            "version": __version__,
+            "date_analyse": datetime.now().isoformat(),
+            "mode": "fichier_unique"
         },
-        "morts": [
-            {
-                "nom": e.nom,
-                "type": e.type,
-                "ligne": e.ligne,
-                "classe_parent": e.classe_parent,
-                "decorateurs": e.decorateurs
+        "cible": {
+            "chemin_absolu": str(Path(chemin).resolve()),
+            "nom": Path(chemin).name,
+            "lignes_de_code": total_loc
+        },
+        "sante": {
+            "score": score,
+            "statut": "Sain" if score > 80 else "A nettoyer" if score > 50 else "Critique"
+        },
+        "resume_statistique": {
+            "total_problemes_detectes": certains + len(suspects),
+            "certains": certains,
+            "suspects": len(suspects),
+            "details_comptage": {
+                "classes_fonctions_mortes": len(morts),
+                "imports_inutilises": len(imports),
+                "variables_fantomes": len(variables),
+                "code_inaccessible": len(unreachable),
+                "parametres_inutilises": len(params)
             }
-            for e in morts
-        ],
-        "suspects": [
-            {
-                "nom": e.nom,
-                "type": e.type,
-                "ligne": e.ligne,
-                "classe_parent": e.classe_parent
-            }
-            for e in suspects
-        ],
-        "imports": [
-            {
-                "nom": i.nom,
-                "ligne": i.ligne,
-                "type": i.type,
-                "module": i.module_source
-            }
-            for i in imports
-        ],
-        "variables": [
-            {
-                "nom": v.nom,
-                "ligne": v.ligne,
-                "fonction": v.fonction_parent,
-                "type_assignation": v.type_assignation,
-            }
-            for v in variables
-        ],
-        "unreachable": [
-            {
-                "debut": u.ligne_debut,
-                "fin": u.ligne_fin,
-                "type": u.type,
-                "description": u.description
-            }
-            for u in unreachable
-        ],
-        "parametres": [
-            {
-                "nom": p.nom,
-                "ligne": p.ligne,
-                "fonction": p.fonction,
-                "est_args": p.est_args,
-                "est_kwargs": p.est_kwargs
-                }
-                for p in params
+        },
+        "details": {
+            "code_mort": [
+                {
+                    "nom": e.nom,
+                    "type": e.type,
+                    "ligne": e.ligne,
+                    "parent": e.classe_parent,
+                    "decorateurs": e.decorateurs,
+                    "signature_structurelle": e.signature_structurelle
+                } for e in morts
+            ],
+            "suspects": [
+                {
+                    "nom": e.nom,
+                    "type": e.type,
+                    "ligne": e.ligne,
+                    "raison": "Méthode publique ou framework"
+                } for e in suspects
+            ],
+            "imports": [
+                {
+                    "nom": i.nom,
+                    "ligne": i.ligne,
+                    "module_source": i.module_source,
+                    "type": i.type
+                } for i in imports
+            ],
+            "variables": [
+                {
+                    "nom": v.nom,
+                    "ligne": v.ligne,
+                    "dans_fonction": v.fonction_parent,
+                    "type_assignation": v.type_assignation
+                } for v in variables
+            ],
+            "code_unreachable": [
+                {
+                    "ligne_debut": u.ligne_debut,
+                    "ligne_fin": u.ligne_fin,
+                    "type": u.type,
+                    "description": u.description
+                } for u in unreachable
+            ],
+            "parametres": [
+                {
+                    "nom": p.nom,
+                    "ligne": p.ligne,
+                    "fonction": p.fonction,
+                    "est_args_kwargs": p.est_args or p.est_kwargs
+                } for p in params
             ]
+        }
     }
-    print(json.dumps(resultat, indent=2, ensure_ascii=False))
+    json_data = json.dumps(resultat, indent=2, ensure_ascii=False)
+    
+    if output_path:
+        Path(output_path).write_text(json_data, encoding='utf-8')
+        print(f" Rapport JSON enregistré: {output_path}")
+    else:
+        print(json_data)
 
 
 def analyser_fichier(chemin: Path, args, config: LimboConfig) -> int:
@@ -323,8 +356,8 @@ def analyser_fichier(chemin: Path, args, config: LimboConfig) -> int:
         for sig, membres in signatures.items() if len(membres) > 1
     ]
 
-    if args.json:
-        exporter_json_fichier(morts, suspects, imports, variables, unreachable, params, str(chemin))
+    if args.json or args.json_file:
+        exporter_json_fichier(morts, suspects, imports, variables, unreachable, params, str(chemin), args.json_file)
     else:
         total = afficher_resultats_fichier(morts, suspects, imports, variables, unreachable, params, chemin.name, args.strict)
         if doublons_locaux:
@@ -465,59 +498,71 @@ def afficher_rapport_sante(resultat: ResultatProjet):
     print("="*60 + "\n")
 
 
-def exporter_json_projet(resultat: ResultatProjet, chemin: str) -> None:
-    """Exporte les résultats d'un projet en JSON."""
+def exporter_json_projet(resultat: ResultatProjet, chemin: str, output_path: str = None) -> None:
+    """Exporte un rapport complet de santé du projet en JSON."""
+    
+    score = resultat.calculer_score_sante()
+    
     resultat_json = {
-        "mode": "projet",
-        "chemin": chemin,
-        "fichiers_analyses": resultat.fichiers_analyses,
-        "resume": {
-            "total_morts": len(resultat.code_mort),
-            "total_suspects": len(resultat.code_suspect)
+        "metadata": {
+            "outil": "Limbo Collector",
+            "version": __version__,
+            "date_analyse": datetime.now().isoformat(),
+            "mode": "projet"
         },
-        "code_mort": [
-            {
-                "fichier": c,
-                "nom": e.nom,
-                "type": e.type,
-                "ligne": e.ligne,
-                "classe_parent": e.classe_parent,
-                "raison": e.raison_utilisation
-            }
-            for c, e in resultat.code_mort
-        ],
-        "code_suspect": [
-            {
-                "fichier": c,
-                "nom": e.nom,
-                "type": e.type,
-                "ligne": e.ligne
-            }
-            for c, e in resultat.code_suspect
-        ],
-        "imports_morts": {
-            f: [
-                {"nom": i.nom, "ligne": i.ligne, "type": i.type}
-                for i in imports
-            ]
-            for f, imports in resultat.imports_morts_par_fichier.items()
-            if imports
+        "projet": {
+            "racine": str(Path(chemin).resolve()),
+            "fichiers_scannes": resultat.fichiers_analyses,
+            "total_lignes_code": resultat.total_lignes
         },
-        "variables_mortes": {
-            f: [
-                {
-                    "nom": v.nom,
-                    "ligne": v.ligne,
-                    "fonction": v.fonction_parent
-                }
-                for v in vars_list
-            ]
-            for f, vars_list in resultat.variables_mortes_par_fichier.items()
-            if vars_list
-        }
+        "rapport_sante": {
+            "score_global": score,
+            "appreciation": "Excellent" if score >= 90 else "Bon" if score >= 75 else "Passable" if score >= 50 else "Critique",
+            "erreurs_rencontrees": resultat.erreurs
+        },
+        "statistiques_globales": {
+            "total_entites_mortes": len(resultat.code_mort),
+            "total_entites_suspectes": len(resultat.code_suspect),
+            "total_imports_inutilises": sum(len(v) for v in resultat.imports_morts_par_fichier.values()),
+            "total_variables_fantomes": sum(len(v) for v in resultat.variables_mortes_par_fichier.values()),
+            "total_unreachable": resultat.stats_unreachable,
+            "total_doublons": len(resultat.doublons)
+        },
+        "analyses_detaillees": {
+            "fichiers": {}
+        },
+        "duplication": [
+            {
+                "id_groupe": i,
+                "nombre_occurrences": len(g.entites),
+                "signature": g.signature[:50] + "...",
+                "emplacements": [
+                    {"fichier": path, "nom": ent.nom, "ligne": ent.ligne} 
+                    for path, ent in g.entites
+                ]
+            } for i, g in enumerate(resultat.doublons)
+        ]
     }
 
-    print(json.dumps(resultat_json, indent=2, ensure_ascii=False))
+    # Organisation des résultats par fichier pour plus de clarté
+    for f in resultat.imports_morts_par_fichier.keys():
+        morts_f = [e for path, e in resultat.code_mort if path == f]
+        suspects_f = [e for path, e in resultat.code_suspect if path == f]
+        
+        resultat_json["analyses_detaillees"]["fichiers"][f] = {
+            "code_mort": [{"nom": e.nom, "type": e.type, "ligne": e.ligne, "raison": e.raison_utilisation} for e in morts_f],
+            "suspects": [{"nom": e.nom, "type": e.type, "ligne": e.ligne} for e in suspects_f],
+            "imports": [{"nom": i.nom, "ligne": i.ligne, "type": i.type} for i in resultat.imports_morts_par_fichier.get(f, [])],
+            "variables": [{"nom": v.nom, "ligne": v.ligne, "fonction": v.fonction_parent} for v in resultat.variables_mortes_par_fichier.get(f, [])]
+        }
+
+    json_data = json.dumps(resultat_json, indent=2, ensure_ascii=False)
+    
+    if output_path:
+        Path(output_path).write_text(json_data, encoding='utf-8')
+        print(f" Rapport JSON enregistré: {output_path}")
+    else:
+        print(json_data)
 
 
 def analyser_dossier(chemin: Path, args, config: LimboConfig) -> int:
@@ -531,8 +576,8 @@ def analyser_dossier(chemin: Path, args, config: LimboConfig) -> int:
         generer_rapport_html(resultat, args.html)
         return 0
 
-    if args.json:
-        exporter_json_projet(resultat, str(chemin))
+    if args.json or args.json_file:
+        exporter_json_projet(resultat, str(chemin), args.json_file)
     else:
         total = afficher_resultats_projet(resultat, args, config)
         return 1 if total > 0 else 0
